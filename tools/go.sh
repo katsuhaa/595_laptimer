@@ -1,7 +1,8 @@
 #!/bin/bash
 # 595_laptimer: one entry point for the work done on the Mac.
 #   ./tools/go.sh test   build and run every host test (PASS/FAIL per test)
-#   ./tools/go.sh vbo    write out/test_sodegaura_synth.vbo for the RaceChrono import check
+#   ./tools/go.sh laps   lap timing on testdata/*.rcz compared with RaceChrono's lap times
+#   ./tools/go.sh vbo    write VBO files for the RaceChrono import check into out/
 # The output is also saved to out/<command>.log. Works with the bash 3.2 that ships with macOS.
 
 set -u
@@ -15,9 +16,10 @@ CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Wshadow -I."
 COREFLAGS="-Wdouble-promotion"
 
 usage() {
-  echo "usage: ./tools/go.sh test | vbo"
+  echo "usage: ./tools/go.sh test | laps | vbo"
   echo "  test  build and run every host test"
-  echo "  vbo   write out/test_sodegaura_synth.vbo (RaceChrono import check)"
+  echo "  laps  lap timing on testdata/*.rcz compared with RaceChrono"
+  echo "  vbo   write VBO files for the RaceChrono import check into out/"
 }
 
 find_cxx() {
@@ -64,21 +66,77 @@ build() {
   echo "build: OK"
 }
 
+# Unzips testdata/*.rcz into build/host/rcz/<name>/ and prints one directory per line
+extract_rcz() {
+  for f in testdata/*.rcz; do
+    [ -e "$f" ] || continue
+    dir="$BUILD/rcz/$(basename "$f" .rcz)"
+    mkdir -p "$dir"
+    if ! unzip -o -q "$f" -d "$dir"; then
+      echo "FAIL: cannot unzip $f"
+      return 1
+    fi
+    echo "$dir"
+  done
+}
+
 run_test() {
   header
   build "$BUILD/host_tests" test/*.cpp
   "$BUILD/host_tests"
 }
 
+run_laps() {
+  header
+  build "$BUILD/laps" tools/host/laps.cpp tools/host/rcz.cpp
+  dirs="$(extract_rcz)" || {
+    echo "$dirs"
+    echo "RESULT: FAIL"
+    exit 1
+  }
+  if [ -z "$dirs" ]; then
+    echo "RESULT: FAIL (no testdata/*.rcz)"
+    exit 1
+  fi
+  old_ifs="$IFS"
+  IFS='
+'
+  set -- $dirs
+  IFS="$old_ifs"
+  "$BUILD/laps" "$@"
+}
+
 run_vbo() {
   header
-  build "$BUILD/vbogen" tools/host/vbogen.cpp test/synth.cpp
-  "$BUILD/vbogen" "$OUT/test_sodegaura_synth.vbo"
+  build "$BUILD/vbogen" tools/host/vbogen.cpp tools/host/rcz.cpp test/synth.cpp
+  failed=0
+  files=0
+  "$BUILD/vbogen" "$OUT/test_sodegaura_synth.vbo" || failed=$((failed + 1))
+  files=$((files + 1))
+  dirs="$(extract_rcz)" || {
+    echo "$dirs"
+    failed=$((failed + 1))
+    dirs=""
+  }
+  old_ifs="$IFS"
+  IFS='
+'
+  for d in $dirs; do
+    IFS="$old_ifs"
+    "$BUILD/vbogen" --rcz "$d" "$OUT/$(basename "$d").vbo" || failed=$((failed + 1))
+    files=$((files + 1))
+  done
+  IFS="$old_ifs"
+  if [ "$failed" -gt 0 ]; then
+    echo "RESULT: FAIL ($failed of $files files)"
+    exit 1
+  fi
+  echo "RESULT: PASS ($files files in $OUT/)"
 }
 
 CMD="${1:-}"
 case "$CMD" in
-  test | vbo) ;;
+  test | laps | vbo) ;;
   *)
     usage
     exit 2
