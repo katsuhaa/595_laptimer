@@ -88,7 +88,7 @@ run_test() {
 
 run_laps() {
   header
-  build "$BUILD/laps" tools/host/laps.cpp tools/host/rcz.cpp
+  build "$BUILD/laps" tools/host/laps.cpp tools/host/rcz.cpp tools/host/vboread.cpp
   dirs="$(extract_rcz)" || {
     echo "$dirs"
     echo "RESULT: FAIL"
@@ -98,10 +98,19 @@ run_laps() {
     echo "RESULT: FAIL (no testdata/*.rcz)"
     exit 1
   fi
+  # RaceChrono VBO exports in testdata/ carry RaceChrono's track definition
+  args=""
+  for v in testdata/*.vbo; do
+    [ -e "$v" ] || continue
+    args="$args--course
+$v
+"
+  done
+  args="$args$dirs"
   old_ifs="$IFS"
   IFS='
 '
-  set -- $dirs
+  set -- $args
   IFS="$old_ifs"
   "$BUILD/laps" "$@"
 }

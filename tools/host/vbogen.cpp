@@ -1,6 +1,6 @@
 // tools/host/vbogen.cpp - writes VBO files for the RaceChrono import check (go.sh vbo).
 //   vbogen <out.vbo>              2 minutes at 25 Hz on a small synthetic oval placed on
-//                                 Sodegaura Forest Raceway, with rpm and throttle channels
+//                                 Sodegaura Forest Raceway, with rpm and accelerator channels
 //   vbogen --rcz <dir> <out.vbo>  a RaceChrono session (unzipped .rcz) converted to VBO,
 //                                 GPS channels only, so RaceChrono can time it again
 // Each file is read back and checked; the last line is "PASS <file>" or "FAIL <file>: ...".
@@ -134,7 +134,8 @@ int synthetic(const char* path) {
   created.hour = 1;  // the date of today with the time of the first row
   created.minute = 0;
   created.second = 0;
-  const lt::VboChannel ch[2] = {{"rpm", "rpm"}, {"throttle", "%"}};
+  // RaceChrono only takes channels whose [header] name it knows: names as in its own export
+  const lt::VboChannel ch[2] = {{"rpm-canbus", "rpm"}, {"accelerator_pos-canbus", "%"}};
   char buf[2048];
   int n = lt::vboHeader(buf, sizeof buf, created, ch, 2,
                         "595_laptimer synthetic test data (not a real session)");

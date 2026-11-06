@@ -1,23 +1,26 @@
 // tools/host/laps.cpp - runs core/lap on RaceChrono sessions and compares every lap with
 // RaceChrono's own lap times (go.sh laps).
-// The S/F line is put where RaceChrono crossed it: the positions at RaceChrono's lap
-// boundaries are averaged, and the direction is the mean direction of travel there.
+// Course: RaceChrono's track definition ([laptiming] of a RaceChrono VBO export with the same
+// track name, given with --course), or, without one, an S/F line placed where RaceChrono
+// crossed it (positions at RaceChrono's lap boundaries).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "core/geo.h"
 #include "core/lap.h"
 #include "tools/host/rcz.h"
+#include "tools/host/vboread.h"
 
 namespace {
 
-constexpr float kWidthNowM = 30.0f;       // S/F width in the current design
-constexpr float kWidthProposedM = 50.0f;  // proposal: also counts the pit lane, like RaceChrono
+constexpr float kSfWidthM = 50.0f;     // decided 2026-11-07: the pit lane counts, as in RaceChrono
+constexpr float kSplitWidthM = 30.0f;  // sector lines
 constexpr float kMinLapS = 30.0f;
-constexpr double kLimitS = 0.05;          // pass: every lap within +-0.05 s of RaceChrono
+constexpr double kLimitS = 0.05;       // pass: every lap within +-0.05 s of RaceChrono
 
 std::string lapText(double s) {
   char b[32];
@@ -26,146 +29,154 @@ std::string lapText(double s) {
   return b;
 }
 
-// Position and direction of travel at time tMs (linear between the two fixes around it)
-bool posAt(const rcz::Session& s, const lt::Plane& pl, int64_t tMs, lt::Vec2* p, lt::Vec2* dir,
-           double* speedKmh) {
-  const auto it = std::upper_bound(s.tMs.begin(), s.tMs.end(), tMs);
-  if (it == s.tMs.begin() || it == s.tMs.end()) return false;
-  const size_t i = static_cast<size_t>(it - s.tMs.begin());
-  const lt::Vec2 a = pl.toLocal(s.latE7[i - 1], s.lonE7[i - 1]);
-  const lt::Vec2 b = pl.toLocal(s.latE7[i], s.lonE7[i]);
-  const float f = static_cast<float>(tMs - s.tMs[i - 1]) / static_cast<float>(s.tMs[i] - s.tMs[i - 1]);
-  *p = a + (b - a) * f;
-  *dir = b - a;
-  *speedKmh = static_cast<double>(s.speedMps[i]) * 3.6;
-  return lt::length(*dir) > 0.0f;
+std::vector<lt::Fix> fixesOf(const rcz::Session& s) {
+  std::vector<lt::Fix> v(s.tMs.size());
+  for (size_t i = 0; i < s.tMs.size(); ++i) {
+    v[i].tUs = s.tMs[i] * 1000;
+    v[i].latE7 = s.latE7[i];
+    v[i].lonE7 = s.lonE7[i];
+    v[i].speedMps = s.speedMps[i];
+    v[i].valid = true;
+  }
+  return v;
 }
 
-struct Crossing {
-  int64_t tMs;
-  float alongM;    // distance from the derived line, along the travel direction
-  float lateralM;  // position along the line (+ = right of the travel direction)
-  double speedKmh;
+int32_t e7(double deg) { return static_cast<int32_t>(std::llround(deg * 1e7)); }
+
+// RaceChrono line: through A, travelling from B towards A
+lt::GateDef gateOf(const vboread::Gate& g, const lt::Plane& pl, float widthM) {
+  const lt::Vec2 a = pl.toLocal(e7(g.latA), e7(g.lonA));
+  const lt::Vec2 b = pl.toLocal(e7(g.latB), e7(g.lonB));
+  return {e7(g.latA), e7(g.lonA), lt::headingOf(a - b), widthM};
+}
+
+// First forward crossing of `g` after `afterUs` (-1: none), using the lap timer itself
+int64_t firstCrossing(const std::vector<lt::Fix>& fixes, const lt::Plane& pl, const lt::GateDef& g,
+                      int64_t afterUs) {
+  lt::CourseDef c{};
+  c.startFinish = g;
+  c.minLapS = kMinLapS;
+  lt::LapTimer t;
+  t.begin(pl, c);
+  for (const lt::Fix& f : fixes) {
+    if (f.tUs <= afterUs) continue;
+    if (t.feed(f) & lt::kEvLapStart) return t.sfCrossUs();
+  }
+  return -1;
+}
+
+struct Course {
+  lt::CourseDef def{};
+  std::string source;
+  std::vector<std::string> splitNames;
 };
 
-struct Line {
-  lt::GateDef def{};
-  bool fromSpread = false;   // orientation fitted through the crossings (else: travel direction)
-  std::vector<Crossing> rc;  // RaceChrono's crossings seen against this line
-};
+// RaceChrono's definition: S/F + split lines, the splits put in driving order
+bool courseFromVbo(const std::vector<vboread::File>& vbos, const rcz::Session& s,
+                   const std::vector<lt::Fix>& fixes, const lt::Plane& pl, Course* out) {
+  for (const vboread::File& f : vbos) {
+    if (f.sessionName != s.trackName) continue;
+    const vboread::Gate* start = nullptr;
+    std::vector<const vboread::Gate*> splits;
+    for (const vboread::Gate& g : f.gates) {
+      if (g.kind == "Start" && !start) start = &g;
+      if (g.kind == "Split") splits.push_back(&g);
+    }
+    if (!start) continue;
+    Course c;
+    c.def.startFinish = gateOf(*start, pl, kSfWidthM);
+    c.def.minLapS = kMinLapS;
+    const int64_t t0 = firstCrossing(fixes, pl, c.def.startFinish, -1);
+    std::vector<std::pair<int64_t, const vboread::Gate*>> order;
+    for (const vboread::Gate* g : splits) {
+      const int64_t t = firstCrossing(fixes, pl, gateOf(*g, pl, kSplitWidthM), t0);
+      if (t >= 0) order.push_back({t, g});
+    }
+    std::sort(order.begin(), order.end(),
+              [](const std::pair<int64_t, const vboread::Gate*>& x,
+                 const std::pair<int64_t, const vboread::Gate*>& y) { return x.first < y.first; });
+    for (const auto& o : order) {
+      if (c.def.numSectors >= lt::kMaxSectors) break;
+      c.def.sectors[c.def.numSectors++] = gateOf(*o.second, pl, kSplitWidthM);
+      c.splitNames.push_back(o.second->name);
+    }
+    const size_t slash = f.path.find_last_of('/');
+    c.source = "RaceChrono's track definition in " +
+               (slash == std::string::npos ? f.path : f.path.substr(slash + 1));
+    *out = c;
+    return true;
+  }
+  return false;
+}
 
-constexpr float kMinSpreadForFitM = 10.0f;  // crossings this far apart give the line's angle
-
-Line deriveLine(const rcz::Session& s, const lt::Plane& pl) {
-  std::vector<int64_t> times;
+// Without a definition: S/F where RaceChrono crossed it, square to the mean travel direction,
+// or to the line through the crossings when they are spread out (one in the pit lane)
+Course courseFromCrossings(const rcz::Session& s, const lt::Plane& pl) {
+  std::vector<lt::Vec2> pts;
+  lt::Vec2 h{0.0f, 0.0f};
   for (const rcz::Lap& l : s.laps) {
-    times.push_back(l.startMs);
-    if (l.finished) times.push_back(l.finishMs);
+    for (int k = 0; k < (l.finished ? 2 : 1); ++k) {
+      const int64_t t = k ? l.finishMs : l.startMs;
+      const auto it = std::upper_bound(s.tMs.begin(), s.tMs.end(), t);
+      if (it == s.tMs.begin() || it == s.tMs.end()) continue;
+      const size_t i = static_cast<size_t>(it - s.tMs.begin());
+      const lt::Vec2 a = pl.toLocal(s.latE7[i - 1], s.lonE7[i - 1]);
+      const lt::Vec2 b = pl.toLocal(s.latE7[i], s.lonE7[i]);
+      const float f = static_cast<float>(t - s.tMs[i - 1]) / static_cast<float>(s.tMs[i] - s.tMs[i - 1]);
+      pts.push_back(a + (b - a) * f);
+      if (lt::length(b - a) > 0.0f) h = h + (b - a) * (1.0f / lt::length(b - a));
+    }
   }
-  std::sort(times.begin(), times.end());
-  times.erase(std::unique(times.begin(), times.end()), times.end());
-
-  std::vector<lt::Vec2> pts, dirs;
-  std::vector<double> spd;
-  std::vector<int64_t> used;
-  for (int64_t t : times) {
-    lt::Vec2 p{}, d{};
-    double v = 0.0;
-    if (!posAt(s, pl, t, &p, &d, &v)) continue;
-    pts.push_back(p);
-    dirs.push_back(d * (1.0f / lt::length(d)));
-    spd.push_back(v);
-    used.push_back(t);
-  }
-  Line line;
-  if (pts.empty()) return line;
-  lt::Vec2 c{0.0f, 0.0f}, h{0.0f, 0.0f};
-  for (size_t i = 0; i < pts.size(); ++i) {
-    c = c + pts[i];
-    h = h + dirs[i];
-  }
-  c = c * (1.0f / static_cast<float>(pts.size()));
+  Course c;
+  c.def.minLapS = kMinLapS;
+  c.source = "line through RaceChrono's lap crossings";
+  if (pts.empty() || lt::length(h) == 0.0f) return c;
+  lt::Vec2 ctr{0.0f, 0.0f};
+  for (const lt::Vec2& p : pts) ctr = ctr + p;
+  ctr = ctr * (1.0f / static_cast<float>(pts.size()));
   h = h * (1.0f / lt::length(h));
-  // RaceChrono's line need not be square to the travel direction. When the crossings are
-  // spread along it (e.g. one in the pit lane), fit the line through them and use its normal.
   double sxx = 0.0, syy = 0.0, sxy = 0.0;
   for (const lt::Vec2& p : pts) {
-    const lt::Vec2 d = p - c;
+    const lt::Vec2 d = p - ctr;
     sxx += static_cast<double>(d.x) * d.x;
     syy += static_cast<double>(d.y) * d.y;
     sxy += static_cast<double>(d.x) * d.y;
   }
-  const double ang = 0.5 * std::atan2(2.0 * sxy, sxx - syy);  // direction of the line
+  const double ang = 0.5 * std::atan2(2.0 * sxy, sxx - syy);
   const lt::Vec2 along{static_cast<float>(std::cos(ang)), static_cast<float>(std::sin(ang))};
   float lo = 0.0f, hi = 0.0f;
   for (const lt::Vec2& p : pts) {
-    lo = std::fmin(lo, lt::dot(p - c, along));
-    hi = std::fmax(hi, lt::dot(p - c, along));
+    lo = std::fmin(lo, lt::dot(p - ctr, along));
+    hi = std::fmax(hi, lt::dot(p - ctr, along));
   }
-  if (hi - lo >= kMinSpreadForFitM) {
+  if (hi - lo >= 10.0f) {
     lt::Vec2 nrm{along.y, -along.x};
-    if (lt::dot(nrm, h) < 0.0f) nrm = nrm * -1.0f;
-    h = nrm;
-    line.fromSpread = true;
+    h = lt::dot(nrm, h) < 0.0f ? nrm * -1.0f : nrm;
   }
-  const lt::Vec2 n{h.y, -h.x};
-  pl.toGlobal(c, &line.def.latE7, &line.def.lonE7);
-  line.def.headingDeg = lt::headingOf(h);
-  for (size_t i = 0; i < pts.size(); ++i) {
-    line.rc.push_back({used[i], lt::dot(pts[i] - c, h), lt::dot(pts[i] - c, n), spd[i]});
-  }
-  return line;
+  pl.toGlobal(ctr, &c.def.startFinish.latE7, &c.def.startFinish.lonE7);
+  c.def.startFinish.headingDeg = lt::headingOf(h);
+  c.def.startFinish.widthM = kSfWidthM;
+  return c;
 }
 
-struct Row {
-  int number;
-  double rcS;
-  double oursS;  // < 0: no matching lap
-};
-
-struct Result {
-  std::vector<Row> rows;
-  int rcLaps = 0;
-  int ourLaps = 0;
-  int matched = 0;
-  double maxDiff = 0.0;
-  bool pass() const { return matched == rcLaps && ourLaps == rcLaps && maxDiff <= kLimitS; }
-};
-
-Result run(const rcz::Session& s, const lt::Plane& pl, lt::GateDef gate, float widthM) {
-  gate.widthM = widthM;
-  lt::CourseDef c{};
-  c.startFinish = gate;
-  c.numSectors = 0;
-  c.minLapS = kMinLapS;
-  lt::LapTimer t;
-  t.begin(pl, c);
-  std::vector<lt::LapResult> ours;
-  for (size_t i = 0; i < s.tMs.size(); ++i) {
-    lt::Fix f{};
-    f.tUs = s.tMs[i] * 1000;
-    f.latE7 = s.latE7[i];
-    f.lonE7 = s.lonE7[i];
-    f.speedMps = s.speedMps[i];
-    f.valid = true;
-    if (t.feed(f) & lt::kEvLap) ours.push_back(t.lastLap());
-  }
-  Result r;
-  r.ourLaps = static_cast<int>(ours.size());
+// How far RaceChrono's lap crossings are from our S/F line (along the travel direction)
+float worstOffsetM(const rcz::Session& s, const lt::Plane& pl, const lt::GateDef& g) {
+  const lt::Vec2 c = pl.toLocal(g.latE7, g.lonE7);
+  const lt::Vec2 h = lt::headingUnit(g.headingDeg);
+  float worst = 0.0f;
   for (const rcz::Lap& l : s.laps) {
-    if (!l.finished) continue;
-    ++r.rcLaps;
-    Row row{l.number, static_cast<double>(l.finishMs - l.startMs) * 1e-3, -1.0};
-    for (const lt::LapResult& o : ours) {
-      if (std::llabs(o.startUs / 1000 - l.startMs) <= 500 && std::llabs(o.endUs / 1000 - l.finishMs) <= 500) {
-        row.oursS = static_cast<double>(o.lapUs) * 1e-6;
-        ++r.matched;
-        r.maxDiff = std::fmax(r.maxDiff, std::fabs(row.oursS - row.rcS));
-      }
+    for (int k = 0; k < (l.finished ? 2 : 1); ++k) {
+      const int64_t t = k ? l.finishMs : l.startMs;
+      const auto it = std::upper_bound(s.tMs.begin(), s.tMs.end(), t);
+      if (it == s.tMs.begin() || it == s.tMs.end()) continue;
+      const size_t i = static_cast<size_t>(it - s.tMs.begin());
+      const lt::Vec2 a = pl.toLocal(s.latE7[i - 1], s.lonE7[i - 1]);
+      const lt::Vec2 b = pl.toLocal(s.latE7[i], s.lonE7[i]);
+      const float f = static_cast<float>(t - s.tMs[i - 1]) / static_cast<float>(s.tMs[i] - s.tMs[i - 1]);
+      worst = std::fmax(worst, std::fabs(lt::dot(a + (b - a) * f - c, h)));
     }
-    r.rows.push_back(row);
   }
-  return r;
+  return worst;
 }
 
 double rateHz(const rcz::Session& s) {
@@ -179,68 +190,93 @@ double rateHz(const rcz::Session& s) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    std::printf("usage: laps <unzipped .rcz directory>...\n");
+  std::vector<vboread::File> vbos;
+  std::vector<std::string> dirs;
+  for (int a = 1; a < argc; ++a) {
+    if (std::strcmp(argv[a], "--course") == 0 && a + 1 < argc) {
+      vboread::File f;
+      std::string err;
+      if (vboread::read(argv[++a], &f, &err)) vbos.push_back(f);
+      else std::printf("warning: %s\n", err.c_str());
+    } else {
+      dirs.push_back(argv[a]);
+    }
+  }
+  if (dirs.empty()) {
+    std::printf("usage: laps [--course <RaceChrono .vbo>]... <unzipped .rcz directory>...\n");
     return 2;
   }
   bool allPass = true;
-  for (int a = 1; a < argc; ++a) {
+  for (const std::string& dir : dirs) {
     rcz::Session s;
     std::string err;
-    if (!rcz::load(argv[a], &s, &err)) {
-      std::printf("FAIL %s: %s\n", argv[a], err.c_str());
+    if (!rcz::load(dir, &s, &err)) {
+      std::printf("FAIL %s: %s\n", dir.c_str(), err.c_str());
       allPass = false;
       continue;
     }
     lt::Plane pl;
     pl.init(s.latE7[s.latE7.size() / 2], s.lonE7[s.lonE7.size() / 2]);
-    const Line line = deriveLine(s, pl);
-    const Result now = run(s, pl, line.def, kWidthNowM);
-    const Result prop = run(s, pl, line.def, kWidthProposedM);
+    const std::vector<lt::Fix> fixes = fixesOf(s);
+    Course course;
+    if (!courseFromVbo(vbos, s, fixes, pl, &course)) course = courseFromCrossings(s, pl);
+    const lt::GateDef& sf = course.def.startFinish;
 
     std::printf("\n== %s\n", s.name.c_str());
-    std::printf("track %s, GPS %.0f Hz, %zu fixes, RaceChrono laps %d\n", s.trackName.c_str(),
-                rateHz(s), s.tMs.size(), prop.rcLaps);
-    float aMin = 0.0f, aMax = 0.0f;
-    for (const Crossing& c : line.rc) {
-      aMin = std::fmin(aMin, c.alongM);
-      aMax = std::fmax(aMax, c.alongM);
+    std::printf("track %s, GPS %.0f Hz, %zu fixes\n", s.trackName.c_str(), rateHz(s), s.tMs.size());
+    std::printf("course: %s\n", course.source.c_str());
+    std::printf("  S/F      %.7f N %.7f E heading %5.1f deg, %2.0f m wide;"
+                " RaceChrono's crossings within %.2f m of it\n",
+                sf.latE7 * 1e-7, sf.lonE7 * 1e-7, static_cast<double>(sf.headingDeg),
+                static_cast<double>(sf.widthM), static_cast<double>(worstOffsetM(s, pl, sf)));
+    for (int i = 0; i < course.def.numSectors; ++i) {
+      const lt::GateDef& g = course.def.sectors[i];
+      std::printf("  %-8s %.7f N %.7f E heading %5.1f deg, %2.0f m wide\n",
+                  course.splitNames[static_cast<size_t>(i)].c_str(), g.latE7 * 1e-7,
+                  g.lonE7 * 1e-7, static_cast<double>(g.headingDeg), static_cast<double>(g.widthM));
     }
-    std::printf("S/F from RaceChrono's %zu crossings: %.7f N %.7f E, heading %.1f deg (%s);"
-                " the crossings lie within %.2f m of this line\n",
-                line.rc.size(), line.def.latE7 * 1e-7, line.def.lonE7 * 1e-7,
-                static_cast<double>(line.def.headingDeg),
-                line.fromSpread ? "square to the line through the crossings"
-                                : "mean direction of travel",
-                static_cast<double>(std::fmax(-aMin, aMax)));
-    for (const Crossing& c : line.rc) {
-      if (std::fabs(c.lateralM) > 0.5f * kWidthNowM) {
-        std::printf("  crossing %.1f m beside the racing line at %.0f km/h (pit lane)\n",
-                    static_cast<double>(c.lateralM), c.speedKmh);
+
+    lt::LapTimer t;
+    t.begin(pl, course.def);
+    std::vector<lt::LapResult> ours;
+    for (const lt::Fix& f : fixes) {
+      if (t.feed(f) & lt::kEvLap) ours.push_back(t.lastLap());
+    }
+    std::printf("lap   RaceChrono   this        diff   sectors\n");
+    int rcLaps = 0, matched = 0;
+    double maxDiff = 0.0;
+    for (const rcz::Lap& l : s.laps) {
+      if (!l.finished) continue;
+      ++rcLaps;
+      const double rc = static_cast<double>(l.finishMs - l.startMs) * 1e-3;
+      const lt::LapResult* m = nullptr;
+      for (const lt::LapResult& o : ours) {
+        if (std::llabs(o.startUs / 1000 - l.startMs) <= 500 && std::llabs(o.endUs / 1000 - l.finishMs) <= 500) {
+          m = &o;
+        }
       }
+      if (!m) {
+        std::printf("%3d  %10s   not found\n", l.number, lapText(rc).c_str());
+        continue;
+      }
+      ++matched;
+      const double ourS = static_cast<double>(m->lapUs) * 1e-6;
+      maxDiff = std::fmax(maxDiff, std::fabs(ourS - rc));
+      std::string sec;
+      for (int k = 0; k < m->numSplits; ++k) {
+        char b[16];
+        std::snprintf(b, sizeof b, " %6.3f", static_cast<double>(m->splitUs[k]) * 1e-6);
+        sec += b;
+      }
+      if (course.def.numSectors > 0 && m->numSplits == 0) sec = " (a sector line was missed)";
+      std::printf("%3d  %10s   %s  %+.3f %s\n", l.number, lapText(rc).c_str(), lapText(ourS).c_str(),
+                  ourS - rc, sec.c_str());
     }
-    std::printf("lap   RaceChrono   S/F %2.0f m        S/F %2.0f m\n",
-                static_cast<double>(kWidthProposedM), static_cast<double>(kWidthNowM));
-    for (size_t i = 0; i < prop.rows.size(); ++i) {
-      const Row& p = prop.rows[i];
-      const Row& n = now.rows[i];
-      std::string colP = p.oursS < 0 ? "not found      " : lapText(p.oursS);
-      std::string colN = n.oursS < 0 ? "not found" : lapText(n.oursS);
-      char dP[16] = "", dN[16] = "";
-      if (p.oursS >= 0) std::snprintf(dP, sizeof dP, " %+.3f", p.oursS - p.rcS);
-      if (n.oursS >= 0) std::snprintf(dN, sizeof dN, " %+.3f", n.oursS - n.rcS);
-      std::printf("%3d  %10s   %s%-7s  %s%s\n", p.number, lapText(p.rcS).c_str(), colP.c_str(), dP,
-                  colN.c_str(), dN);
-    }
-    std::printf("S/F %2.0f m: %d/%d laps match, our laps %d, max difference %.3f s -> %s\n",
-                static_cast<double>(kWidthProposedM), prop.matched, prop.rcLaps, prop.ourLaps,
-                prop.maxDiff, prop.pass() ? "PASS" : "FAIL");
-    std::printf("S/F %2.0f m: %d/%d laps match, our laps %d, max difference %.3f s -> %s\n",
-                static_cast<double>(kWidthNowM), now.matched, now.rcLaps, now.ourLaps, now.maxDiff,
-                now.pass() ? "PASS" : "FAIL");
-    allPass = allPass && prop.pass();
+    const bool pass = matched == rcLaps && static_cast<int>(ours.size()) == rcLaps && maxDiff <= kLimitS;
+    std::printf("%d/%d laps match RaceChrono, our laps %zu, max difference %.3f s -> %s\n", matched,
+                rcLaps, ours.size(), maxDiff, pass ? "PASS" : "FAIL");
+    allPass = allPass && pass;
   }
-  std::printf("\nRESULT: %s (judged with the proposed S/F width %.0f m, limit +-%.2f s)\n",
-              allPass ? "PASS" : "FAIL", static_cast<double>(kWidthProposedM), kLimitS);
+  std::printf("\nRESULT: %s (limit +-%.2f s)\n", allPass ? "PASS" : "FAIL", kLimitS);
   return allPass ? 0 : 1;
 }

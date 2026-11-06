@@ -149,12 +149,12 @@ TEST(lap_accuracy_seeds_25hz_0_3m) {
   CHECKF(worst <= lim, "worst %.4f s", worst);
 }
 
-TEST(lap_pit_lane_reverse_and_1s_dropout) {
+TEST(lap_parallel_road_reverse_and_1s_dropout) {
   const double v = 37.5;
   std::vector<lt::Fix> f;
   pass(f, 0, true, 0, v);                                            // start
   pass(f, 0, true, 30, v);                                           // lap 1: 30.000
-  pass(f, 40, true, 60, v);                                          // pit lane 40 m away
+  pass(f, 40, true, 60, v);                                          // parallel road 40 m away
   pass(f, 0, false, 90, v);                                          // reverse
   pass(f, 0, true, 120, v, crossT(120, v) - 0.5, crossT(120, v) + 0.5);  // 1 s dropout on the line
   const tcommon::Session s = runLine(f);
