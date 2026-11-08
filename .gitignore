@@ -1,2 +1,8 @@
 build/
 out/
+firmware/webcheck/wifi_secrets.h
+firmware/laptimer/wifi_secrets.h
+firmware/laptimer/src/app/defaults_data.h
+firmware/laptimer/src/web/web_assets.h
+data/wifi.json
+__pycache__/

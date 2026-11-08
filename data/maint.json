@@ -1,0 +1,13 @@
+{
+  "_note": "UI設計 §9 の初期項目（案）。間隔の 0 は使わない。last_date \"\"・last_odo null・last_track_h null は未記録（その間隔は判定しない）",
+  "version": 1,
+  "items": [
+    {"id": "oil", "name": "エンジンオイル", "interval_km": 5000, "interval_days": 182, "interval_track_h": 0, "last_date": "", "last_odo": null, "last_track_h": null, "note": "案: 整備記録に合わせて直す"},
+    {"id": "oil_filter", "name": "オイルフィルター", "interval_km": 10000, "interval_days": 0, "interval_track_h": 0, "last_date": "", "last_odo": null, "last_track_h": null, "note": "案: 整備記録に合わせて直す"},
+    {"id": "brake_pad_f", "name": "ブレーキパッド（前）", "interval_km": 0, "interval_days": 0, "interval_track_h": 0, "last_date": "", "last_odo": null, "last_track_h": null, "note": "案: 整備記録に合わせて直す"},
+    {"id": "brake_pad_r", "name": "ブレーキパッド（後）", "interval_km": 0, "interval_days": 0, "interval_track_h": 0, "last_date": "", "last_odo": null, "last_track_h": null, "note": "案: 整備記録に合わせて直す"},
+    {"id": "brake_fluid", "name": "ブレーキフルード", "interval_km": 0, "interval_days": 365, "interval_track_h": 10, "last_date": "", "last_odo": null, "last_track_h": null, "note": "案: 整備記録に合わせて直す"},
+    {"id": "coolant", "name": "冷却水", "interval_km": 0, "interval_days": 730, "interval_track_h": 0, "last_date": "", "last_odo": null, "last_track_h": null, "note": "案: 整備記録に合わせて直す"},
+    {"id": "plug", "name": "プラグ", "interval_km": 20000, "interval_days": 0, "interval_track_h": 0, "last_date": "", "last_odo": null, "last_track_h": null, "note": "案: 整備記録に合わせて直す"}
+  ]
+}

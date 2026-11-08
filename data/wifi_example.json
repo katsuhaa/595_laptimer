@@ -1,0 +1,9 @@
+{
+  "_note": "wifi.json の例（本物の値ではありません）。名前とパスワードを入れて wifi.json としてアップロードする。順番が優先順位: 見えた最初のネットワークに接続。2.4 GHz のみ（iPhone のインターネット共有は「互換性を優先」をオン）",
+  "version": 1,
+  "hostname": "laptimer",
+  "networks": [
+    {"ssid": "iphone-hotspot-name", "pass": "hotspot-password"},
+    {"ssid": "home-ssid", "pass": "home-password"}
+  ]
+}

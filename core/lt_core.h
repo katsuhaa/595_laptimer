@@ -1,0 +1,25 @@
+// core/lt_core.h - umbrella header for the firmware (core/ is compiled as the Arduino library "lt_core").
+// The firmware includes only this file; core files include each other by bare name.
+#pragma once
+
+#include "bestfile.h"
+#include "course.h"
+#include "csvlog.h"
+#include "drive.h"
+#include "geo.h"
+#include "ghost.h"
+#include "gtime.h"
+#include "imucal.h"
+#include "json.h"
+#include "lap.h"
+#include "maint.h"
+#include "meter_link.h"
+#include "mlink.h"
+#include "peakhold.h"
+#include "rcdiy.h"
+#include "replay.h"
+#include "reportdata.h"
+#include "store.h"
+#include "ubx.h"
+#include "vbo.h"
+#include "veh.h"

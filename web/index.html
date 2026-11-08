@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>595 laptimer</title>
+<style>
+:root{--bg:#000;--panel:#141414;--panel2:#0b0b0b;--line:#262626;--text:#fff;--text2:#c8c8c8;--label:#9a9a9a;
+--blue:#4FA3FF;--yellow:#FFD400;--green:#2ECC40;--red:#FF1E2D;--orange:#FF9500}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN",sans-serif}
+main{max-width:640px;margin:0 auto;padding:12px 12px 48px}
+h1{font-size:20px;margin:4px 0 10px;display:flex;align-items:baseline;gap:8px}
+h1 .fw{font-size:12px;color:var(--label);font-weight:400}
+h2{font-size:17px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+h2::before{content:"";width:6px;height:18px;border-radius:3px;background:var(--c,var(--blue))}
+section{background:var(--panel);border-radius:12px;padding:12px;margin:12px 0}
+.num{font-variant-numeric:tabular-nums}
+.muted{color:var(--label)} .small{font-size:12.5px} .err{color:var(--red)} .ok{color:var(--green)} .warn{color:var(--orange)}
+dl.st{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:14px}
+dl.st dt{color:var(--label)} dl.st dd{margin:0}
+a{color:var(--blue)}
+.btn,button{display:inline-flex;align-items:center;justify-content:center;min-height:40px;font:inherit;font-size:14px;padding:6px 12px;border-radius:9px;border:1px solid #2f3b4b;background:#0e1824;color:var(--text);text-decoration:none;gap:4px}
+.btn.pri,button.pri{background:#123a66;border-color:#1f5fa8}
+button.danger{background:#2a0d0f;border-color:#5c1a1f;color:#ffb3b8}
+button:disabled,.btn.dis{opacity:.45;pointer-events:none}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:10px;margin:10px 0}
+.card .h{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.card .date{font-weight:700;font-size:15px}
+.card .course{font-size:14px;color:var(--text2)}
+.card .facts{font-size:13px;color:var(--text2);margin-top:2px}
+.badge{flex:none;font-size:11.5px;font-weight:700;border-radius:6px;padding:2px 7px;white-space:nowrap}
+.b-dl{background:#0f2a14;color:var(--green);border:1px solid #1e5a2a}
+.b-new{background:#222;color:var(--text2);border:1px solid #3a3a3a}
+.b-rec{background:#2a0d0f;color:#ff8a92;border:1px solid #5c1a1f}
+.files{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+.files a{display:flex;justify-content:space-between;padding:9px 2px;border-bottom:1px solid var(--line);text-decoration:none;color:var(--text)}
+.files a .k{color:var(--text2)} .files a .s{color:var(--label);font-size:13px}
+.cfg{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.cfg:last-child{border-bottom:0}
+.cfg .n{font-weight:600} .cfg .d{grid-column:1;font-size:12.5px;color:var(--label)} .cfg .d span{display:block}
+.cfg .acts{grid-row:1/span 2;grid-column:2;display:flex;gap:6px}
+.verdict{grid-column:1/span 2;font-size:13px;margin-top:4px;white-space:pre-wrap}
+.verdict:empty{display:none}
+input[type=file]{display:none}
+label.btn{cursor:pointer}
+.mi{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:10px;margin:10px 0}
+.mi.over{border-color:#5c1a1f;background:#160606}
+.mi .t{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.mi .rem{font-size:13px;text-align:right}
+.mi .r{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.fg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:8px}
+.fg label{font-size:11.5px;color:var(--label);display:flex;flex-direction:column;gap:2px}
+.fg label.w2{grid-column:span 2} .fg label.w3{grid-column:span 3}
+.fg input,#odokm{font:inherit;font-size:16px;width:100%;min-width:0;padding:6px 7px;border-radius:7px;border:1px solid #333;background:#000;color:var(--text)}
+#odokm{width:11em;flex:0 0 auto}
+.fg .grp{grid-column:span 3;font-size:12px;color:var(--text2);margin-top:4px}
+#toast{position:fixed;left:12px;right:12px;bottom:12px;max-width:616px;margin:0 auto;background:#1b2a3c;border:1px solid #2f4e74;color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;display:none;z-index:9}
+.hint{font-size:13px;color:var(--text2);margin:6px 0 0}
+progress{width:100%;height:6px;margin-top:6px}
+</style>
+</head>
+<body>
+<main>
+<h1>595 laptimer <span class="fw" id="fw"></span></h1>
+
+<section id="s-status">
+<h2>本機</h2>
+<dl class="st" id="status"><dt>状態</dt><dd>読み込み中…</dd></dl>
+<div class="row"><button id="reload">↻ 更新</button><button class="danger" id="format" hidden>XTSD をフォーマット</button></div>
+<div class="small err" id="storagemsg"></div>
+</section>
+
+<section id="s-sessions">
+<h2>セッション</h2>
+<div class="muted small" id="sumline"></div>
+<div id="sessions"></div>
+</section>
+
+<section id="s-config" style="--c:var(--text2)">
+<h2>設定ファイルのアップロード</h2>
+<div class="hint">iPhone → 本機。「ファイル」App から選ぶと、この iPhone で中身を確かめてから本機へ送ります。本機でももう一度検査し、壊れていれば理由を出して受け取りません（本機の設定は変わりません）。</div>
+<div id="configs"></div>
+</section>
+
+<section id="s-maint" style="--c:var(--orange)">
+<h2>整備（maint.json の編集）</h2>
+<div class="hint" id="maintinfo"></div>
+<div class="row"><input type="number" id="odokm" inputmode="decimal" min="0" max="999999.9" step="0.1" placeholder="車の ODO（km）"><button id="odoset">ODO を合わせる</button></div>
+<div class="small" id="odoinfo"></div>
+<div id="maint"></div>
+<div class="row"><button id="madd">＋ 項目を追加</button><button class="pri" id="msend">本機へ送る</button></div>
+<div class="small" id="mverdict"></div>
+</section>
+
+<section id="s-course" style="--c:var(--yellow)">
+<h2>コース（RaceChrono の VBO から作る）</h2>
+<div class="hint">RaceChrono で書き出した VBO（そのコースを走ったセッション）を選ぶと、RaceChrono のコース定義（S/F とセクターの線）から本機のコースを作るか置き換えます。送るのは VBO の先頭（線の定義）だけです。</div>
+<div class="row"><label class="btn" for="vbopick">VBO を選ぶ</label><input type="file" id="vbopick"><button class="pri" id="vbosend" disabled>本機でコースにする</button></div>
+<div class="small" id="vboinfo"></div>
+</section>
+
+<section id="s-mac" style="--c:var(--text2)">
+<h2>Mac へまとめてコピー</h2>
+<div class="hint">Finder の「移動」→「サーバへ接続」で <span class="num" id="davurl">http://laptimer.local</span> を開くと、本機が読み取り専用のドライブとして出ます（sessions フォルダごとコピー）。</div>
+</section>
+</main>
+<div id="toast"></div>
+<script>
+'use strict';
+(function () {
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const CONFIGS = [
+  ['courses.json', 'コース（S/F・セクターの線）'],
+  ['maint.json', '整備の項目'],
+  ['checklist.json', '出走前チェックの項目'],
+  ['wifi.json', 'Wi-Fi の接続先（本機からは読み出せません）'],
+];
+const WHY = {'eof': 'ファイルが途中で終わっています', 'unexpected': 'ここに来るはずのない文字があります',
+  'expected-key': '項目名（"…"）が必要です', 'expected-colon': '「:」が必要です',
+  'expected-comma-or-brace': '「,」か「}」が必要です', 'expected-comma-or-bracket': '「,」か「]」が必要です',
+  'eof-in-string': '文字列が閉じていません', 'control-in-string': '文字列の中に改行などがあります',
+  'bad-escape': '「\\」のあとが正しくありません', 'bad-number': '数値の書き方が正しくありません',
+  'too-deep': '入れ子が深すぎます', 'extra': '最後のあとに余分な文字があります', 'bad-bom': '先頭の BOM が壊れています',
+  'read-failed': '読み出しに失敗',
+  // lt::CourseDb::check / lt::Maint::check
+  'missing-version': '"version" がありません', 'bad-version': '"version" は 1 にしてください',
+  'missing-courses': '"courses" の一覧がありません', 'too-many-courses': 'コースが多すぎます（16 まで）',
+  'missing-items': '"items" の一覧がありません', 'too-many-items': '項目が多すぎます（16 まで）',
+  'missing-id': '"id" がありません', 'bad-id': '"id" は英小文字・数字・_ だけにしてください',
+  'duplicate-id': '"id" が重複しています', 'name-too-long': '名前が長すぎます', 'note-too-long': 'メモが長すぎます',
+  'bad-min-lap': '"min_lap_s" が正しくありません', 'bad-center': '"center" が正しくありません',
+  'too-many-gates': '線が多すぎます（S/F とセクター 7 本まで）', 'bad-gate-type': '線の "type" は sf か split です',
+  'gate-name-too-long': '線の名前が長すぎます', 'bad-lat': '緯度が正しくありません', 'bad-lon': '経度が正しくありません',
+  'bad-heading': '"heading"（進行方向）が正しくありません', 'bad-width': '"width"（幅）が正しくありません',
+  'missing-lat': '緯度 "lat" がありません', 'missing-lon': '経度 "lon" がありません', 'missing-heading': '"heading" がありません',
+  'missing-type': '線の "type" がありません', 'no-sf': 'S/F（"type":"sf"）の線がありません', 'two-sf': 'S/F の線が 2 本あります',
+  'bad-interval': '間隔の値が正しくありません', 'bad-date': '日付は YYYY-MM-DD で書いてください',
+  'bad-odo': '"last_odo" が正しくありません', 'bad-track-h': '"last_track_h" が正しくありません',
+  'expected-object': '{ … } が必要です', 'expected-array': '[ … ] が必要です', 'expected-string': '文字列が必要です',
+  'expected-number': '数値が必要です', 'expected-bool': 'true か false が必要です', 'number-range': '数値が範囲外です',
+  'not-integer': '整数にしてください'};
+const ERR = {'json': 'JSON が壊れている', 'too-large': '大きすぎる', 'no-space': '空き容量が足りない', 'busy': '本機が XTSD を使用中（記録中）',
+  'write-failed': '書き込みに失敗', 'rename-failed': '置き換えに失敗', 'bad-name': '受け付けない名前', 'no-file': 'ファイルが届いていない',
+  'active': '記録中のセッション', 'not-found': '見つからない', 'storage': 'XTSD を使えない', 'convert': 'コースにできない',
+  'mounted': 'XTSD は使える状態', 'format-failed': 'フォーマットできない', 'not-available': '本機にこの機能がない'};
+let ST = null, SESS = [], CFG = [];
+
+function size(n) { return n >= 1e9 ? (n / 1e9).toFixed(2) + '\u00a0GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + '\u00a0MB' : n >= 1e3 ? (n / 1e3).toFixed(1) + '\u00a0KB' : n + '\u00a0B'; }
+function lapText(ms) { if (!(ms > 0)) return '--'; const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000; return m + ':' + (s < 10 ? '0' : '') + s.toFixed(3); }
+function idDate(id) {
+  const m = /^(\d{4})(\d\d)(\d\d)_(\d\d)(\d\d)(\d\d)$/.exec(id || '');
+  if (!m) return id;
+  const w = '日月火水木金土'[new Date(Date.UTC(+m[1], m[2] - 1, +m[3])).getUTCDay()];
+  return m[1] + '/' + m[2] + '/' + m[3] + '（' + w + '）' + m[4] + ':' + m[5];
+}
+function tz() { return ST && ST.tz_min != null ? ST.tz_min : 540; }
+function localText(epochS) {
+  if (!(epochS > 0)) return '';
+  const t = new Date(epochS * 1000 + tz() * 60000), p = n => (n < 10 ? '0' : '') + n;
+  return t.getUTCFullYear() + '/' + p(t.getUTCMonth() + 1) + '/' + p(t.getUTCDate()) + ' ' + p(t.getUTCHours()) + ':' + p(t.getUTCMinutes());
+}
+function today() {  // YYYY-MM-DD on the device clock (or this iPhone's)
+  const ms = ST && ST.utc_ms > 0 ? ST.utc_ms : Date.now();
+  return new Date(ms + tz() * 60000).toISOString().slice(0, 10);
+}
+let toastTimer = 0;
+function toast(text) { const t = $('toast'); t.textContent = text; t.style.display = 'block'; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.style.display = 'none'; }, 5000); }
+
+async function getJson(url, ms) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), ms || 15000);
+  try {
+    const r = await fetch(url, {cache: 'no-store', signal: c.signal});
+    const body = await r.text();
+    let j = null;
+    try { j = JSON.parse(body); } catch (e) { j = null; }
+    if (!r.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
+    if (j === null) throw new Error('本機の応答が読めません');
+    return j;
+  } finally { clearTimeout(t); }
+}
+async function post(url) {
+  const r = await fetch(url, {method: 'POST', cache: 'no-store'});
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = {ok: false, error: 'HTTP ' + r.status}; }
+  return j;
+}
+function upload(url, blob, name, onProgress) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('file', blob, name);
+    const x = new XMLHttpRequest();
+    x.open('POST', url);
+    x.upload.onprogress = e => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    x.onload = () => { try { resolve(JSON.parse(x.responseText)); } catch (e) { reject(new Error('本機の応答が読めない（HTTP ' + x.status + '）')); } };
+    x.onerror = () => reject(new Error('通信エラー'));
+    x.send(fd);
+  });
+}
+
+// ------------------------------------------------------------ status
+function showStatus() {
+  const s = ST, dl = $('status');
+  dl.textContent = '';
+  const add = (k, v, cls) => { dl.appendChild(el('dt', null, k)); const d = el('dd', cls, v); dl.appendChild(d); return d; };
+  $('fw').textContent = s.fw ? 'fw ' + s.fw : '';
+  add('アドレス', (s.host ? s.host + '.local' : '') + (s.ip ? '　' + s.ip : ''), 'num');
+  add('Wi-Fi', (s.ssid || '--') + (s.rssi ? '（' + s.rssi + ' dBm）' : ''));
+  const rem = s.remain_h != null && s.remain_h >= 0 ? '残り 約 ' + (s.remain_h >= 10 ? Math.round(s.remain_h) : s.remain_h.toFixed(1)) + ' 時間' : '残り --';
+  add('記録', rem + (s.total_bytes ? '（空き ' + size(s.free_bytes) + ' / ' + size(s.total_bytes) + '）' : ''), s.low ? 'warn' : null);
+  const und = SESS.filter(x => !x.downloaded).length;
+  add('未ダウンロード', SESS.length ? und + ' セッション（全 ' + SESS.length + '）' : '--', und ? 'warn' : null);
+  if (s.active) add('記録中', s.active, 'err');
+  const cf = CFG.filter(c => c.exists).map(c => c.name.replace('.json', '') + ' ' + localText(c.mtime).slice(5)).join('　');
+  add('設定ファイル', cf || '--', 'small');
+  $('davurl').textContent = 'http://' + (s.host || 'laptimer') + '.local' + (s.ip ? '（または http://' + s.ip + '）' : '');
+  const unmounted = s.storage_mounted === false;
+  $('storagemsg').textContent = unmounted ? 'XTSD が使えません（FAT がないか壊れています）。記録・ダウンロードはできません。' + (s.can_format ? '「XTSD をフォーマット」で使えるようになります（中身は消えます）。' : '') : '';
+  $('format').hidden = !(unmounted && s.can_format);
+}
+
+$('format').addEventListener('click', async () => {
+  if (!confirm('XTSD をフォーマットします。中身はすべて消えます。よろしいですか？')) return;
+  const r = await post('/api/format');
+  toast(r.ok ? 'フォーマットしました' : 'フォーマットできません: ' + (r.message || ERR[r.error] || r.error));
+  await refreshAll();
+});
+
+// ------------------------------------------------------------ sessions
+const KIND = {vbo: 'VBO', csv: 'CSV（記録そのもの）', ubx: 'UBX（GNSS の生データ）', imu: 'IMU（200 Hz）', can: 'CAN（生フレーム）', laps: 'ラップ一覧', meta: 'meta.json', other: 'その他'};
+function sessionCard(x) {
+  const m = x.meta || {};
+  const c = el('div', 'card');
+  c.dataset.id = x.id;
+  const h = el('div', 'h');
+  const left = el('div');
+  left.appendChild(el('div', 'date num', idDate(x.id)));
+  left.appendChild(el('div', 'course', m.course && m.course.name ? m.course.name : '一般道'));
+  const f = [];
+  if (m.laps) f.push(m.laps + ' 周');
+  if (m.best_ms) f.push('BEST ' + lapText(m.best_ms) + (m.best_lap ? '（L' + m.best_lap + '）' : ''));
+  if (m.max_kmh) f.push(Number(m.max_kmh).toFixed(0) + ' km/h');
+  if (m.start_utc_ms && m.end_utc_ms) f.push(Math.round((m.end_utc_ms - m.start_utc_ms) / 60000) + ' 分');
+  f.push(size(x.bytes || 0));
+  left.appendChild(el('div', 'facts num', f.join(' · ')));
+  if (!x.meta) left.appendChild(el('div', 'small err', 'meta.json が読めません（ファイルはダウンロードできます）'));
+  h.appendChild(left);
+  h.appendChild(x.active ? el('span', 'badge b-rec', '記録中') : x.downloaded ? el('span', 'badge b-dl', 'ダウンロード済み') : el('span', 'badge b-new', '未ダウンロード'));
+  c.appendChild(h);
+  const id = encodeURIComponent(x.id);
+  const r1 = el('div', 'row');
+  const view = el('a', 'btn pri', 'レポートを見る'); view.href = '/report?id=' + id;
+  const save = el('a', 'btn', 'レポートをダウンロード' + (x.report_dl ? ' ✓' : '')); save.href = '/report?id=' + id + '&save=1';
+  r1.appendChild(view); r1.appendChild(save);
+  c.appendChild(r1);
+  const r2 = el('div', 'row');
+  const files = x.files || [];
+  const main = k => files.find(fl => fl.kind === k);
+  for (const k of ['vbo', 'csv']) {
+    const fl = main(k);
+    if (!fl) continue;
+    const a = el('a', 'btn', k.toUpperCase() + ' ' + size(fl.size) + (fl.dl ? ' ✓' : ''));
+    a.href = '/dl?id=' + id + '&f=' + encodeURIComponent(fl.name);
+    r2.appendChild(a);
+  }
+  const others = files.filter(fl => fl.kind !== 'vbo' && fl.kind !== 'csv');
+  const more = el('button', null, 'その他 ▾');
+  const del = el('button', 'danger', x.active ? '記録中は削除不可' : '削除');
+  del.disabled = !!x.active;
+  r2.appendChild(more); r2.appendChild(del);
+  c.appendChild(r2);
+  const list = el('div', 'files');
+  list.hidden = true;
+  for (const fl of others) {
+    const a = el('a');
+    a.href = '/dl?id=' + id + '&f=' + encodeURIComponent(fl.name);
+    a.appendChild(el('span', 'k', (KIND[fl.kind] || fl.kind) + (fl.dl ? ' ✓' : '')));
+    a.appendChild(el('span', 's num', size(fl.size)));
+    list.appendChild(a);
+  }
+  if (!others.length) list.appendChild(el('div', 'small muted', 'ほかのファイルはありません'));
+  c.appendChild(list);
+  more.addEventListener('click', () => { list.hidden = !list.hidden; more.textContent = list.hidden ? 'その他 ▾' : 'その他 ▴'; });
+  del.addEventListener('click', () => removeSession(x));
+  for (const a of c.querySelectorAll('a[href^="/dl"],a[href*="save=1"]')) a.addEventListener('click', () => { setTimeout(loadSessions, 4000); setTimeout(loadSessions, 20000); });
+  return c;
+}
+
+async function loadSessions() {
+  try {
+    SESS = (await getJson('/api/sessions', 30000)).filter(x => x && x.id);  // null: a folder the device could not read
+  } catch (e) {
+    $('sessions').textContent = '';
+    $('sessions').appendChild(el('div', 'err', 'セッションの一覧を読めません: ' + e.message));
+    return;
+  }
+  SESS.sort((a, b) => (a.id < b.id ? 1 : -1));  // newest first
+  const box = $('sessions');
+  box.textContent = '';
+  if (!SESS.length) box.appendChild(el('div', 'muted', 'セッションはありません'));
+  for (const x of SESS) box.appendChild(sessionCard(x));
+  const und = SESS.filter(x => !x.downloaded).length;
+  $('sumline').textContent = SESS.length + ' セッション、未ダウンロード ' + und + '。✓ はダウンロード済みのファイル。';
+  if (ST) showStatus();
+}
+
+async function removeSession(x) {
+  const name = (x.meta && x.meta.course && x.meta.course.name) || '一般道';
+  let q = idDate(x.id) + '（' + name + '）を本機から削除します。元に戻せません。';
+  if (!x.downloaded) q += '\n\nこのセッションはまだダウンロードしていません。';
+  if (!confirm(q)) return;
+  const r = await post('/api/delete?id=' + encodeURIComponent(x.id));
+  toast(r.ok ? '削除しました: ' + idDate(x.id) : '削除できません: ' + (r.message || ERR[r.error] || r.error));
+  await refreshAll();
+}
+
+// ------------------------------------------------------------ config files
+function shapeError(name, o) {  // the file's structure, before it goes to the device
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return '一番外側が { … } ではありません';
+  if (name === 'courses.json') {
+    if (!Array.isArray(o.courses)) return '"courses" の一覧がありません';
+    for (const c of o.courses) {
+      if (!c || typeof c.id !== 'string' || !/^[a-z0-9_]{1,31}$/.test(c.id)) return 'コースの "id" は英小文字・数字・_ の 31 文字までにしてください';
+      if (!Array.isArray(c.gates) || !c.gates.some(g => g && g.type === 'sf')) return (c.id || 'コース') + ' に S/F（"type":"sf"）の線がありません';
+    }
+  } else if (name === 'maint.json') {
+    if (!Array.isArray(o.items)) return '"items" の一覧がありません';
+    for (const it of o.items) if (!it || typeof it.id !== 'string' || !it.id) return '"id" のない項目があります';
+  } else if (name === 'wifi.json') {
+    if (!Array.isArray(o.networks)) return '"networks" の一覧がありません';
+    for (const n of o.networks) if (!n || typeof n.ssid !== 'string' || !n.ssid) return '"ssid" のない接続先があります';
+  } else if (name === 'checklist.json') {
+    for (const [k, v] of Object.entries(o)) if (k !== 'version' && typeof v !== 'boolean') return '"' + k + '" は true か false にしてください';
+  }
+  return '';
+}
+
+function verdictText(r, name) {
+  if (r.ok) return '本機に保存しました（' + name + '、' + size(r.size || 0) + '）。本機が読み込み直します。';
+  let t = '本機が受け取りませんでした: ' + (ERR[r.error] || r.error || '不明');
+  if (r.error === 'json' && r.line) t = '本機の検査: ' + r.line + ' 行目 ' + r.col + ' 文字目: ' + (WHY[r.why] || r.why);
+  else if (r.error === 'json') t = '本機の検査: ' + (WHY[r.why] || r.why);
+  if (r.message) t += '（' + r.message + '）';
+  return t + '\n本機の設定は変わっていません。';
+}
+
+async function sendConfig(name, file, out) {
+  out.className = 'verdict';
+  out.textContent = '確認中…';
+  let text;
+  try { text = await file.text(); } catch (e) { out.textContent = 'ファイルを読めません: ' + e.message; out.classList.add('err'); return; }
+  let obj = null, local = '';
+  try { obj = JSON.parse(text.replace(/^﻿/, '')); } catch (e) { local = 'この iPhone の確認: JSON として読めません（' + e.message + '）'; }
+  if (!local) {
+    const bad = shapeError(name, obj);
+    if (bad) { out.textContent = file.name + ' は ' + name + ' の形ではありません: ' + bad + '\n送りませんでした。'; out.classList.add('err'); return; }
+  }
+  out.textContent = (local ? local + '\n' : '') + '本機へ送っています…';
+  let r;
+  try { r = await upload('/upload?name=' + encodeURIComponent(name) + '&size=' + file.size, file, name); }
+  catch (e) { out.textContent = (local ? local + '\n' : '') + '送れませんでした: ' + e.message; out.classList.add('err'); return; }
+  out.textContent = (local ? local + '\n' : '') + verdictText(r, name);
+  out.classList.add(r.ok ? 'ok' : 'err');
+  await loadConfig();
+  if (r.ok && name === 'maint.json') await loadMaint();
+}
+
+function showConfig() {
+  const box = $('configs');
+  if (!box.children.length) {
+    for (const [name, what] of CONFIGS) {
+      const row = el('div', 'cfg');
+      row.dataset.name = name;
+      row.appendChild(el('div', 'n', name));
+      const d = el('div', 'd');
+      row.appendChild(d);
+      const acts = el('div', 'acts');
+      const inp = el('input'); inp.type = 'file'; inp.id = 'up_' + name.replace('.', '_');
+      const lab = el('label', 'btn pri', '選んで送る'); lab.htmlFor = inp.id;
+      acts.appendChild(lab); acts.appendChild(inp);
+      if (name !== 'wifi.json') { const a = el('a', 'btn', '中身'); a.href = '/config/' + name; a.target = '_blank'; acts.appendChild(a); }
+      row.appendChild(acts);
+      const v = el('div', 'verdict');
+      row.appendChild(v);
+      inp.addEventListener('change', () => { const f = inp.files[0]; inp.value = ''; if (f) sendConfig(name, f, v); });
+      row._d = d; row._what = what;
+      box.appendChild(row);
+    }
+  }
+  for (const row of box.children) {
+    const c = CFG.find(x => x.name === row.dataset.name);
+    row._d.textContent = '';
+    row._d.appendChild(el('span', null, row._what));
+    row._d.appendChild(el('span', 'num', c && c.exists ? localText(c.mtime) + ' 更新・' + size(c.size) : 'まだありません'));
+  }
+}
+
+async function loadConfig() {
+  try { CFG = await getJson('/api/config'); } catch (e) { CFG = []; }
+  showConfig();
+  if (ST) showStatus();
+}
+
+// ------------------------------------------------------------ maintenance
+let MAINT = null, dirty = false;
+const MF = [  // field, label, type, width; a string alone is a group heading
+  ['name', '名前', 'text', 'w2'], ['id', 'ID', 'text', ''],
+  '間隔（0 は使わない）',
+  ['interval_km', 'km', 'number', ''], ['interval_days', '日', 'number', ''], ['interval_track_h', 'サーキット h', 'number', ''],
+  '前回（空欄は未記録）',
+  ['last_date', '日付', 'date', 'w3'], ['last_odo', 'ODO km', 'number', ''], ['last_track_h', 'サーキット h', 'number', ''],
+  ['note', 'メモ', 'text', 'w3']];
+
+function remaining(it) {  // smallest remaining fraction over the intervals in use
+  const parts = [];
+  let worst = Infinity;
+  const odo = ST && ST.odo_km >= 0 ? ST.odo_km : null, th = ST && ST.track_h >= 0 ? ST.track_h : null;
+  if (it.interval_km > 0 && odo != null && it.last_odo != null) {
+    const r = it.interval_km - (odo - it.last_odo); parts.push('残り ' + Math.round(r).toLocaleString() + ' km'); worst = Math.min(worst, r / it.interval_km);
+  }
+  if (it.interval_days > 0 && it.last_date) {
+    const days = Math.round((Date.parse(today()) - Date.parse(it.last_date)) / 86400000);
+    if (!isNaN(days)) { const r = it.interval_days - days; parts.push('残り ' + r + ' 日'); worst = Math.min(worst, r / it.interval_days); }
+  }
+  if (it.interval_track_h > 0 && th != null && it.last_track_h != null) {
+    const r = it.interval_track_h - (th - it.last_track_h); parts.push('残り ' + r.toFixed(1) + ' h'); worst = Math.min(worst, r / it.interval_track_h);
+  }
+  const anyInterval = it.interval_km > 0 || it.interval_days > 0 || it.interval_track_h > 0;
+  return {text: parts.join(' / ') || (anyInterval ? '前回が未記録' : '間隔が未設定'), worst, known: parts.length > 0};
+}
+
+function maintItem(it, idx) {
+  const box = el('div', 'mi');
+  const rem = remaining(it);
+  if (rem.worst < 0) box.classList.add('over');
+  const t = el('div', 't');
+  t.appendChild(el('b', null, it.name || '（名前なし）'));
+  t.appendChild(el('span', 'rem ' + (!rem.known ? 'muted' : rem.worst < 0 ? 'err' : rem.worst <= 0.2 ? 'warn' : 'ok'), rem.text));
+  box.appendChild(t);
+  const fg = el('div', 'fg');
+  fg.hidden = !it._open;
+  for (const f of MF) {
+    if (typeof f === 'string') { fg.appendChild(el('div', 'grp', f)); continue; }
+    const [k, label, type, w] = f;
+    const lab = el('label', w || null, label);
+    const inp = el('input');
+    inp.type = type;
+    if (type === 'number') { inp.inputMode = 'decimal'; inp.step = 'any'; inp.min = '0'; }
+    inp.value = it[k] != null ? it[k] : '';
+    if (k === 'last_odo' || k === 'last_track_h' || k === 'last_date') inp.placeholder = '未記録';
+    inp.addEventListener('input', () => {
+      // an empty "last" value means "not recorded" (null / ""), an empty interval means "not used" (0)
+      if (type === 'number') it[k] = inp.value === '' ? (k.startsWith('last_') ? null : 0) : Number(inp.value);
+      else it[k] = inp.value;
+      dirty = true; $('mverdict').textContent = '未送信の変更があります。'; $('mverdict').className = 'small warn';
+    });
+    inp.dataset.k = k;
+    lab.appendChild(inp);
+    fg.appendChild(lab);
+  }
+  const r = el('div', 'r');
+  const edit = el('button', null, it._open ? '閉じる ▴' : '編集 ▾');
+  const done = el('button', null, '実施済みにする');
+  const del = el('button', 'danger', '項目を消す');
+  del.hidden = !it._open;
+  edit.addEventListener('click', () => { it._open = !it._open; fg.hidden = !it._open; del.hidden = !it._open; edit.textContent = it._open ? '閉じる ▴' : '編集 ▾'; });
+  done.addEventListener('click', async () => {
+    if (dirty && !confirm('未送信の変更は消えます。本機の maint.json で「実施済み」にします。')) return;
+    const res = await post('/api/maintdone?id=' + encodeURIComponent(it.id));
+    toast(res.ok ? (it.name || it.id) + ' を実施済みにしました' : '実施済みにできません: ' + (res.message || ERR[res.error] || res.error));
+    await refreshStatus(); await loadMaint(); await loadConfig();
+  });
+  del.addEventListener('click', () => { if (!confirm((it.name || it.id) + ' を一覧から消します（本機へ送るまで本機は変わりません）')) return; MAINT.items.splice(idx, 1); dirty = true; showMaint(); });
+  r.appendChild(edit); r.appendChild(done); r.appendChild(del);
+  box.appendChild(r);
+  box.appendChild(fg);
+  return box;
+}
+
+function showMaint() {
+  const box = $('maint');
+  box.textContent = '';
+  const odo = ST && ST.odo_km >= 0 ? Math.round(ST.odo_km).toLocaleString() + ' km' : '--';
+  const th = ST && ST.track_h >= 0 ? ST.track_h.toFixed(1) + ' h' : '--';
+  $('maintinfo').textContent = '本機の今の値: ODO ' + odo + '・サーキット時間 ' + th + '・今日 ' + today() + '。「実施済みにする」は本機が今日の日付と今の値で記録します。';
+  if (!MAINT) return;
+  MAINT.items.forEach((it, i) => box.appendChild(maintItem(it, i)));
+  if (!MAINT.items.length) box.appendChild(el('div', 'muted', '項目はありません'));
+  if (dirty) { $('mverdict').textContent = '未送信の変更があります。'; $('mverdict').className = 'small warn'; }
+}
+
+async function loadMaint() {
+  try {
+    const r = await fetch('/config/maint.json', {cache: 'no-store'});
+    MAINT = r.ok ? JSON.parse((await r.text()).replace(/^﻿/, '')) : {version: 1, items: []};
+  } catch (e) { MAINT = {version: 1, items: []}; $('mverdict').textContent = '本機の maint.json を読めません: ' + e.message; }
+  if (!Array.isArray(MAINT.items)) MAINT.items = [];
+  dirty = false;
+  $('mverdict').textContent = '';
+  showMaint();
+}
+
+function maintCheck() {
+  const ids = new Set();
+  for (const it of MAINT.items) {
+    if (!it.name) return '名前のない項目があります';
+    if (!/^[a-z0-9_]{1,23}$/.test(it.id || '')) return (it.name || '項目') + ' の ID は英小文字・数字・_ の 23 文字までにしてください';
+    if (ids.has(it.id)) return 'ID ' + it.id + ' が重複しています';
+    ids.add(it.id);
+    for (const k of ['interval_km', 'interval_days', 'interval_track_h', 'last_odo', 'last_track_h']) if (it[k] != null && !(Number(it[k]) >= 0)) return it.name + ' の ' + k + ' が負または数値ではありません';
+    if (it.last_date && !/^\d{4}-\d\d-\d\d$/.test(it.last_date)) return it.name + ' の日付が YYYY-MM-DD ではありません';
+  }
+  return '';
+}
+
+$('madd').addEventListener('click', () => {
+  if (!MAINT) MAINT = {version: 1, items: []};
+  let n = MAINT.items.length + 1;
+  while (MAINT.items.some(x => x.id === 'item' + n)) n++;
+  MAINT.items.push({_open: true, id: 'item' + n, name: '', interval_km: 0, interval_days: 0, interval_track_h: 0, last_date: today(),
+    last_odo: ST && ST.odo_km >= 0 ? Math.round(ST.odo_km) : null, last_track_h: ST && ST.track_h >= 0 ? Math.round(ST.track_h * 10) / 10 : null, note: ''});
+  dirty = true;
+  showMaint();
+});
+$('msend').addEventListener('click', async () => {
+  const out = $('mverdict');
+  const bad = maintCheck();
+  if (bad) { out.textContent = '送れません: ' + bad; out.className = 'small err'; return; }
+  // other keys of the loaded file ("_note" ...) are kept; null = not recorded
+  const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
+  const strip = it => { const o = Object.assign({}, it); delete o._open; return o; };
+  const doc = Object.assign({}, MAINT, {version: MAINT.version || 1, items: MAINT.items.map(it => Object.assign(strip(it), {
+    id: it.id, name: it.name, interval_km: Number(it.interval_km) || 0, interval_days: Number(it.interval_days) || 0,
+    interval_track_h: Number(it.interval_track_h) || 0, last_date: it.last_date || '', last_odo: num(it.last_odo),
+    last_track_h: num(it.last_track_h), note: it.note || ''}))});
+  const blob = new Blob([JSON.stringify(doc, null, 2) + '\n'], {type: 'application/json'});
+  out.textContent = '本機へ送っています…'; out.className = 'small';
+  try {
+    const r = await upload('/upload?name=maint.json&size=' + blob.size, blob, 'maint.json');
+    out.textContent = verdictText(r, 'maint.json'); out.className = 'small ' + (r.ok ? 'ok' : 'err');
+    if (r.ok) { dirty = false; await loadConfig(); }
+  } catch (e) { out.textContent = '送れませんでした: ' + e.message; out.className = 'small err'; }
+});
+
+// ------------------------------------------------------------ course from a RaceChrono VBO
+let vboPart = null;
+$('vbopick').addEventListener('change', async () => {
+  const f = $('vbopick').files[0];
+  $('vbopick').value = '';
+  const info = $('vboinfo');
+  vboPart = null; $('vbosend').disabled = true;
+  if (!f) return;
+  info.className = 'small'; info.textContent = '読んでいます…';
+  let text;
+  try { text = await f.text(); } catch (e) { info.textContent = '読めません: ' + e.message; info.className = 'small err'; return; }
+  const cut = text.search(/\r?\n\[data\]/);
+  const head = cut >= 0 ? text.slice(0, cut) + '\r\n[data]\r\n' : text;
+  const lt = /\[laptiming\]([\s\S]*?)(\r?\n\s*\r?\n|\r?\n\[|$)/.exec(head);
+  const lines = lt ? lt[1].split(/\r?\n/).map(s => s.trim()).filter(s => /^(Start|Split)\s/.test(s)) : [];
+  const nm = /\[session data\][\s\S]*?\r?\nname ([^\r\n]*)/.exec(head);
+  if (!lines.some(s => s.startsWith('Start'))) { info.textContent = f.name + ' には RaceChrono のコース定義（[laptiming] の Start）がありません。RaceChrono で「VBO に書き出し」たファイルを選んでください。'; info.className = 'small err'; return; }
+  if (cut < 0 && head.length > 1048576) { info.textContent = 'VBO の形ではありません（[data] がない）'; info.className = 'small err'; return; }
+  vboPart = new Blob([head], {type: 'application/octet-stream'});
+  info.textContent = (nm ? 'トラック: ' + nm[1].trim() + '　' : '') + '線 ' + lines.length + ' 本（' + lines.map(s => s.split('¬').pop().trim()).join('、') + '）。送るのは先頭 ' + size(vboPart.size) + '。';
+  $('vbosend').disabled = false;
+});
+// ODO base value (UI設計 §9: ODO = the value set here + the integrated CAN speed)
+$('odoset').addEventListener('click', async () => {
+  const info = $('odoinfo');
+  const t = $('odokm').value.trim();
+  const km = Number(t);
+  if (!t || !isFinite(km) || km < 0 || km > 999999.9) { info.textContent = '0〜999999.9 km の数で入れてください'; info.className = 'small err'; return; }
+  const v = Math.round(km * 10) / 10;
+  if (!confirm('本機の ODO を ' + v.toLocaleString() + ' km にします')) return;
+  const res = await post('/api/odo?km=' + encodeURIComponent(String(v)));
+  info.textContent = res.ok ? 'ODO を ' + v.toLocaleString() + ' km にしました' : 'ODO を変えられません: ' + (res.message || ERR[res.error] || res.error);
+  info.className = 'small ' + (res.ok ? 'ok' : 'err');
+  if (res.ok) $('odokm').value = '';
+  await refreshStatus(); showMaint();
+});
+
+$('vbosend').addEventListener('click', async () => {
+  if (!vboPart) return;
+  const info = $('vboinfo');
+  $('vbosend').disabled = true;
+  try {
+    const r = await upload('/api/course_from_vbo', vboPart, 'course.vbo');
+    info.textContent = r.ok ? '本機でコースにしました' + (r.message ? ': ' + r.message : '') : 'コースにできません: ' + (r.message || ERR[r.error] || r.error);
+    info.className = 'small ' + (r.ok ? 'ok' : 'err');
+  } catch (e) { info.textContent = '送れませんでした: ' + e.message; info.className = 'small err'; }
+  await loadConfig();
+});
+
+// ------------------------------------------------------------ start
+async function refreshStatus() {
+  try { ST = await getJson('/api/status', 8000); showStatus(); }
+  catch (e) { $('status').textContent = ''; $('status').appendChild(el('dd', 'err', '本機の状態を読めません: ' + e.message)); }
+}
+async function refreshAll() {
+  await refreshStatus();
+  await Promise.all([loadSessions(), loadConfig()]);
+}
+$('reload').addEventListener('click', refreshAll);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadSessions(); });
+
+(async () => {
+  await refreshAll();
+  await loadMaint();
+  if (location.pathname === '/maint') $('s-maint').scrollIntoView();
+  window.__ltIndex = {ready: true, sessions: SESS.length};
+})();
+})();
+</script>
+</body>
+</html>

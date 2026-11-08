@@ -1,0 +1,876 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>595 laptimer レポート</title>
+<style>
+:root{--bg:#000;--panel:#141414;--line:#262626;--axis:#3a3a3a;--text:#fff;--text2:#c8c8c8;--label:#9a9a9a;
+--yellow:#FFD400;--blue:#4FA3FF;--green:#2ECC40;--red:#FF1E2D;--tint:#1F1A00}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN",sans-serif}
+main{max-width:680px;margin:0 auto;padding:12px 12px 40px}
+h1{font-size:20px;margin:4px 0 2px;font-weight:700}
+h2{font-size:16px;margin:0 0 8px;font-weight:700}
+.sub{color:var(--text2);font-size:13px}
+.note{color:var(--label);font-size:12px;margin:6px 0 0}
+section{background:var(--panel);border-radius:12px;padding:12px;margin:12px 0}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--blue)}
+#status{color:var(--text2);padding:24px 4px;font-size:15px}
+#status.err{color:var(--red)}
+.top{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 0}
+.tile{background:#0b0b0b;border:1px solid var(--line);border-radius:10px;padding:6px 10px}
+.tile .k{font-size:11px;color:var(--label);letter-spacing:.04em}
+.tile .v{font-size:19px;font-weight:600}
+.tile.best .v{color:var(--yellow)}
+.links{margin:10px 0 0;font-size:14px;display:flex;gap:16px;flex-wrap:wrap}
+/* lap selector */
+#pick{position:sticky;top:0;z-index:5;background:rgba(0,0,0,.92);margin:0 -12px;padding:8px 12px;display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;border-bottom:1px solid var(--line)}
+#pick button{flex:none;font:inherit;font-size:13px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:5px 10px}
+#pick button.on{border-color:var(--yellow);box-shadow:inset 0 0 0 1px var(--yellow)}
+#pick button .b{color:var(--yellow);font-weight:700;margin-left:4px;font-size:11px}
+#pick .lbl{flex:none;align-self:center;font-size:12px;color:var(--label)}
+/* lap table: line 1 lap, time, delta, max speed; line 2 the sectors in aligned columns */
+table.laps{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.laps th{font-weight:600;color:var(--label);font-size:11px;text-align:right;padding:2px 6px}
+table.laps th:first-child{text-align:left}
+table.laps tr.hd2 th{padding-bottom:6px;border-bottom:1px solid var(--line)}
+table.laps td{text-align:right;padding:7px 6px 1px;font-size:14px}
+table.laps td:first-child{text-align:left;color:var(--text2)}
+table.laps td.t{font-weight:700;font-size:16px}
+table.laps tr.s td{padding:0 6px 7px;border-bottom:1px solid var(--line)}
+.sg{display:grid;gap:4px;font-size:12.5px;color:var(--text2)}
+.sg span{text-align:right}
+.sg span.bs{color:var(--yellow);font-weight:700}
+table.laps tr.best td{background:var(--tint)}
+table.laps tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--yellow)}
+table.laps tr.tb td{color:var(--text2)}
+.badge{display:inline-block;background:var(--yellow);color:#000;font-size:11px;font-weight:800;border-radius:4px;padding:1px 5px}
+.pos{color:var(--red)} .neg{color:var(--green)}
+tr.lap,tr.s{cursor:pointer}
+/* charts */
+.legend{display:flex;gap:14px;font-size:12px;color:var(--text2);margin:0 0 6px;flex-wrap:wrap}
+.key{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:4px;margin-right:5px}
+.toggle{display:flex;gap:6px;margin:0 0 8px}
+.toggle button{font:inherit;font-size:13px;color:var(--text2);background:#0b0b0b;border:1px solid var(--line);border-radius:8px;padding:4px 10px}
+.toggle button.on{color:var(--text);border-color:var(--text2)}
+.chart{margin:10px 0 0}
+.chart .hd{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--label);gap:8px}
+.chart .hd b{color:var(--text2);font-weight:600;font-size:13px;white-space:nowrap}
+.chart .ro{font-variant-numeric:tabular-nums;color:var(--text);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv{position:relative;touch-action:pan-y;-webkit-user-select:none;user-select:none}
+.cv canvas{display:block;position:absolute;left:0;top:0}
+.scale{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--label);margin:6px 0 0}
+.scale canvas{flex:1;height:8px;border-radius:4px}
+table.sec{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums;margin-top:8px}
+table.sec th,table.sec td{padding:5px 4px;border-bottom:1px solid var(--line);text-align:right}
+table.sec th{color:var(--label);font-weight:600;font-size:11px}
+table.sec th:first-child,table.sec td:first-child{text-align:left}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.kv{background:#0b0b0b;border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.kv .k{font-size:11px;color:var(--label)}
+.kv .v{font-size:18px;font-weight:600}
+.kv .s{font-size:12px;color:var(--text2)}
+ul.notes{margin:6px 0 0;padding-left:18px;color:var(--text2);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<div id="status">レポートを読み込んでいます…（本機から送られるデータが多いと十数秒かかります）</div>
+<div id="app" hidden>
+<header>
+<h1 id="title"></h1>
+<div class="sub" id="when"></div>
+<div class="top" id="tiles"></div>
+<div class="links" id="links"></div>
+</header>
+<div id="pick"></div>
+<section id="s-laps"><h2>ラップ</h2><table class="laps" id="laps"></table>
+<div class="note">行をタップすると、下のコース図とグラフにそのラップを出します（比較はベストラップ）。</div></section>
+<section id="s-map"><h2>コース図</h2>
+<div class="toggle" id="mapmode"><button data-m="speed" class="on">速度</button><button data-m="delta">ベストとの差</button></div>
+<div class="cv" id="map"></div>
+<div class="scale" id="mapscale"></div>
+<div class="note" id="mapnote"></div></section>
+<section id="s-charts"><h2>距離ごとの比較</h2>
+<div class="legend" id="legend"></div>
+<div id="charts"></div>
+<div class="note">グラフを左右になぞると、その地点の値とコース図の位置が出ます。距離はベストラップの S/F からの距離です。</div>
+<table class="sec" id="sectab"></table></section>
+<section id="s-g"><h2>G（前後・横）</h2><div class="legend" id="glegend"></div><div class="cv" id="gplot"></div>
+<div class="note">上が加速、下が減速、右が右向きの G。円は 0.5 G ごと。</div></section>
+<section id="s-car"><h2>車両</h2><div class="grid2" id="car"></div><div class="cv" id="water" style="margin-top:10px"></div></section>
+<section id="s-about"><h2>このレポートについて</h2><div class="sub" id="about"></div><ul class="notes" id="notes"></ul></section>
+</div>
+</main>
+<!--LT_DATA-->
+<script>
+'use strict';
+(function () {
+const C = {yellow: '#FFD400', blue: '#4FA3FF', green: '#2ECC40', red: '#FF1E2D', grid: '#262626', axis: '#3a3a3a',
+  label: '#9a9a9a', text: '#ffffff', text2: '#c8c8c8', panel: '#141414', gray: '#5a5a5a'};
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+// ---------------------------------------------------------------- data
+function blocks(root) {
+  const q = id => { const e = root.querySelector('#' + id); return e ? e.textContent : null; };
+  return {meta: q('lt-meta'), laps: q('lt-laps'), log: q('lt-log'), info: q('lt-info')};
+}
+
+async function loadBlocks() {
+  let b = blocks(document);
+  if (b.log !== null) return b;
+  // Not embedded: fetch the same blocks from the device (laptimer.local/report.html?id=...)
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) throw new Error('このファイルにはセッションのデータが入っていません');
+  const res = await fetch('/api/reportdata?id=' + encodeURIComponent(id), {cache: 'no-store'});
+  if (!res.ok) throw new Error('本機からデータを読めません（HTTP ' + res.status + '）');
+  const t = document.createElement('template');
+  t.innerHTML = await res.text();
+  b = blocks(t.content);
+  if (b.log === null) throw new Error('本機の応答にデータがありません');
+  return b;
+}
+
+function parseJson(s) { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } }
+
+function parseLaps(text) {
+  const out = [];
+  if (!text) return out;
+  for (const line of text.split('\n')) {
+    const f = line.trim().split(',');
+    if (f.length < 4 || !/^\d+$/.test(f[0])) continue;
+    const sec = (f[4] || '').split(';').filter(x => x !== '').map(Number);
+    out.push({lap: +f[0], start: +f[1], end: +f[2], ms: +f[3], sec: sec});
+  }
+  return out;
+}
+
+const COLS = {utc_ms: 't', lat: 'lat', lon: 'lon', speed_kmh: 'spd', lon_g: 'lonG', lat_g: 'latG', rpm: 'rpm',
+  throttle_pct: 'thr', boost_bar: 'boost', water_c: 'water', fuel_pct: 'fuel', lap: 'lap', sector: 'sector', lap_ms: 'lapMs'};
+
+function parseLog(text) {
+  const lines = text.split('\n');
+  const head = (lines[0] || '').trim().split(',');
+  let n = 0;
+  for (let i = 1; i < lines.length; i++) if (lines[i].length > 2) n++;
+  const d = {n: 0};
+  const idx = [];
+  for (const [col, key] of Object.entries(COLS)) {
+    const k = head.indexOf(col);
+    d[key] = (key === 't' || key === 'lat' || key === 'lon') ? new Float64Array(n) : new Float32Array(n);
+    d[key].fill(NaN);
+    if (k >= 0) idx.push([k, d[key]]);
+  }
+  let r = 0;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length <= 2) continue;
+    const f = line.split(',');
+    for (const [k, arr] of idx) { const v = f[k]; arr[r] = v === undefined || v === '' ? NaN : +v; }
+    r++;
+  }
+  d.n = r;
+  return d;
+}
+
+// ---------------------------------------------------------------- derived values
+function project(d) {
+  let lat0 = NaN, lon0 = NaN;
+  for (let i = 0; i < d.n; i++) if (!isNaN(d.lat[i]) && !isNaN(d.lon[i])) { lat0 = d.lat[i]; lon0 = d.lon[i]; break; }
+  const ky = 110574.0, kx = 111320.0 * Math.cos(lat0 * Math.PI / 180);
+  d.x = new Float32Array(d.n); d.y = new Float32Array(d.n);
+  for (let i = 0; i < d.n; i++) { d.x[i] = (d.lon[i] - lon0) * kx; d.y[i] = (d.lat[i] - lat0) * ky; }
+}
+
+function lowerBound(a, v, lo, hi) { while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < v) lo = m + 1; else hi = m; } return lo; }
+
+// Rows of each lap, distance from S/F and time since S/F
+function buildLaps(d, laps) {
+  for (const L of laps) {
+    L.i0 = lowerBound(d.t, L.start, 0, d.n);
+    L.i1 = lowerBound(d.t, L.end, 0, d.n) - 1;
+    const n = L.i1 - L.i0 + 1;
+    L.n = n > 0 ? n : 0;
+    L.dist = new Float32Array(L.n); L.el = new Float32Array(L.n);
+    let s = 0, maxV = 0;
+    for (let k = 0; k < L.n; k++) {
+      const i = L.i0 + k;
+      if (k === 0) { const v0 = d.spd[i] / 3.6; s = isNaN(v0) ? 0 : v0 * (d.t[i] - L.start) / 1000; }
+      else { const dx = d.x[i] - d.x[i - 1], dy = d.y[i] - d.y[i - 1]; const st = Math.hypot(dx, dy); if (st < 200) s += st; }
+      L.dist[k] = s; L.el[k] = (d.t[i] - L.start) / 1000;
+      if (d.spd[i] > maxV) maxV = d.spd[i];
+    }
+    L.maxKmh = maxV;
+    L.len = L.n ? s + (d.spd[L.i1] / 3.6 || 0) * (L.end - d.t[L.i1]) / 1000 : 0;
+  }
+}
+
+// Each point of lap A matched to the nearest point of the reference lap R, searching forward from the
+// last match (as the device's ghost): distance along R and R's time there
+function matchLap(d, A, R) {
+  const xb = new Float32Array(A.n).fill(NaN), tb = new Float32Array(A.n).fill(NaN);
+  if (A === R) { for (let k = 0; k < A.n; k++) { xb[k] = A.dist[k]; tb[k] = A.el[k]; } return {xb, tb}; }
+  const maxOff2 = 25 * 25, rn = R.n;
+  let m = 0, lost = true, lastX = 0;
+  for (let k = 0; k < A.n; k++) {
+    const i = A.i0 + k, px = d.x[i], py = d.y[i];
+    if (isNaN(px)) { lost = true; continue; }
+    const from = lost ? m : Math.max(0, m - 2), to = lost ? rn - 2 : Math.min(rn - 2, m + 80);
+    let best = -1, bd = Infinity, bu = 0;
+    for (let j = from; j <= to; j++) {
+      const a = R.i0 + j, ax = d.x[a], ay = d.y[a], bx = d.x[a + 1] - ax, by = d.y[a + 1] - ay;
+      const l2 = bx * bx + by * by;
+      let u = l2 > 0 ? ((px - ax) * bx + (py - ay) * by) / l2 : 0;
+      u = u < 0 ? 0 : u > 1 ? 1 : u;
+      const ex = px - ax - bx * u, ey = py - ay - by * u, e2 = ex * ex + ey * ey;
+      if (e2 < bd) { bd = e2; best = j; bu = u; }
+    }
+    if (best < 0 || bd > maxOff2) { lost = true; continue; }
+    lost = false; m = best;
+    let x = R.dist[best] + (R.dist[best + 1] - R.dist[best]) * bu;
+    if (x < lastX) x = lastX;  // never backwards along the reference
+    lastX = x;
+    xb[k] = x; tb[k] = R.el[best] + (R.el[best + 1] - R.el[best]) * bu;
+  }
+  return {xb, tb};
+}
+
+// ---------------------------------------------------------------- formatting
+function lapText(ms) {
+  if (!(ms >= 0)) return '--:--.---';
+  const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000;
+  return m + ':' + (s < 10 ? '0' : '') + s.toFixed(3);
+}
+function secText(ms) { return ms >= 60000 ? lapText(ms) : (ms / 1000).toFixed(3); }
+function deltaText(ms) { return (ms > 0 ? '+' : ms < 0 ? '−' : '±') + (Math.abs(ms) / 1000).toFixed(3); }
+function fmt(v, dec) { return isNaN(v) ? '--' : v.toFixed(dec); }
+function localDate(utcMs, tzMin) {
+  const t = new Date(utcMs + tzMin * 60000);
+  const w = '日月火水木金土'[t.getUTCDay()];
+  const p = n => (n < 10 ? '0' : '') + n;
+  return t.getUTCFullYear() + '/' + p(t.getUTCMonth() + 1) + '/' + p(t.getUTCDate()) + '（' + w + '）' + p(t.getUTCHours()) + ':' + p(t.getUTCMinutes());
+}
+function niceStep(range, n) {
+  const raw = range / Math.max(1, n), p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+}
+
+// ---------------------------------------------------------------- canvas helpers
+const DPR = Math.min(3, window.devicePixelRatio || 1);
+function layer(box, w, h) {
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(w * DPR); cv.height = Math.round(h * DPR);
+  cv.style.width = w + 'px'; cv.style.height = h + 'px';
+  box.appendChild(cv);
+  const g = cv.getContext('2d');
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  return g;
+}
+function boxWidth(box) { return Math.max(240, Math.floor(box.getBoundingClientRect().width)); }
+
+// A line chart over distance: base layer (grid, lines) and an overlay (crosshair)
+function LineChart(parent, opt) {
+  this.opt = opt;
+  const wrap = el('div', 'chart');
+  const hd = el('div', 'hd');
+  const t = el('b', null, opt.title);
+  this.ro = el('span', 'ro');
+  hd.appendChild(t); hd.appendChild(this.ro);
+  wrap.appendChild(hd);
+  this.box = el('div', 'cv');
+  wrap.appendChild(this.box);
+  parent.appendChild(wrap);
+}
+LineChart.prototype.layout = function () {
+  this.box.textContent = '';
+  this.W = boxWidth(this.box); this.H = this.opt.h || 112;
+  this.box.style.height = (this.H + 18) + 'px';
+  this.g = layer(this.box, this.W, this.H + 18);
+  this.o = layer(this.box, this.W, this.H + 18);
+  this.pl = 40; this.pr = 6; this.pt = 6; this.pb = 0;
+};
+LineChart.prototype.set = function (series, xMax, vlines) {
+  this.series = series; this.xMax = xMax || 1; this.vlines = vlines || [];
+  let lo = Infinity, hi = -Infinity;
+  for (const s of series) for (let i = 0; i < s.y.length; i++) { const v = s.y[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+  this.empty = !(hi >= lo);
+  if (this.empty) { lo = 0; hi = 1; }
+  if (this.opt.zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  if (this.opt.min != null) lo = Math.min(lo, this.opt.min);
+  if (hi - lo < (this.opt.minRange || 1e-6)) { const c = (hi + lo) / 2, r = (this.opt.minRange || 1) / 2; lo = c - r; hi = c + r; }
+  const step = niceStep(hi - lo, 3);
+  this.lo = Math.floor(lo / step) * step; this.hi = Math.ceil(hi / step) * step; this.step = step;
+};
+LineChart.prototype.px = function (x) { return this.pl + (this.W - this.pl - this.pr) * x / this.xMax; };
+LineChart.prototype.py = function (v) { return this.pt + this.H - this.pt - (this.H - this.pt) * (v - this.lo) / (this.hi - this.lo); };
+LineChart.prototype.draw = function () {
+  const g = this.g, W = this.W, H = this.H;
+  g.clearRect(0, 0, W, H + 18);
+  g.font = '10px system-ui,-apple-system,sans-serif'; g.textBaseline = 'middle';
+  g.lineWidth = 1;
+  // y grid and ticks
+  const dec = this.step < 0.1 ? 2 : this.step < 1 ? 1 : 0;
+  for (let v = this.lo; v <= this.hi + this.step / 2; v += this.step) {
+    const y = Math.round(this.py(v)) + 0.5;
+    g.strokeStyle = Math.abs(v) < this.step / 1000 && this.opt.zero ? C.gray : C.grid;
+    g.beginPath(); g.moveTo(this.pl, y); g.lineTo(W - this.pr, y); g.stroke();
+    g.fillStyle = C.label; g.textAlign = 'right';
+    g.fillText((this.opt.sign && v > 0 ? '+' : '') + v.toFixed(dec), this.pl - 5, y);
+  }
+  // x ticks (distance)
+  const xs = niceStep(this.xMax, 4);
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let x = 0; x <= this.xMax; x += xs) {
+    const px = Math.round(this.px(x)) + 0.5;
+    g.strokeStyle = C.grid; g.beginPath(); g.moveTo(px, this.pt); g.lineTo(px, H); g.stroke();
+    g.fillStyle = C.label; g.fillText(x >= 1000 ? (x / 1000) + 'km' : x + 'm', Math.min(W - 14, Math.max(this.pl + 10, px)), H + 4);
+  }
+  // sector lines
+  g.textBaseline = 'top';
+  for (const v of this.vlines) {
+    const px = Math.round(this.px(v.x)) + 0.5;
+    g.strokeStyle = C.axis; g.beginPath(); g.moveTo(px, this.pt); g.lineTo(px, H); g.stroke();
+    if (this.opt.labels) { g.fillStyle = C.label; g.textAlign = 'left'; g.fillText(v.label, px + 3, this.pt); }
+  }
+  if (this.empty) {
+    g.fillStyle = C.label; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('このセッションにはデータがありません', this.pl + (W - this.pl) / 2, H / 2);
+    return;
+  }
+  g.save();
+  g.beginPath(); g.rect(this.pl, 0, W - this.pl - this.pr, H); g.clip();
+  for (const s of this.series) {
+    if (s.fill) this.fillDelta(s);
+    g.strokeStyle = s.color; g.lineWidth = s.w || 2; g.lineJoin = 'round'; g.lineCap = 'round';
+    g.beginPath();
+    let pen = false;
+    for (let i = 0; i < s.y.length; i++) {
+      const v = s.y[i], x = s.x[i];
+      if (isNaN(v) || isNaN(x)) { pen = false; continue; }
+      const X = this.px(x), Y = this.py(v);
+      if (pen) g.lineTo(X, Y); else { g.moveTo(X, Y); pen = true; }
+    }
+    g.stroke();
+  }
+  g.restore();
+};
+// Time lost (above 0) red, gained (below 0) green, as a light wash between the line and 0
+LineChart.prototype.fillDelta = function (s) {
+  const g = this.g, y0 = this.py(0);
+  for (const [color, above] of [[C.red, true], [C.green, false]]) {
+    g.fillStyle = color; g.globalAlpha = 0.18;
+    g.beginPath();
+    let pen = false, lastX = 0;
+    for (let i = 0; i < s.y.length; i++) {
+      const v = s.y[i], x = s.x[i];
+      if (isNaN(v) || isNaN(x)) { if (pen) { g.lineTo(lastX, y0); g.closePath(); pen = false; } continue; }
+      const X = this.px(x), Y = this.py(above ? Math.max(0, v) : Math.min(0, v));
+      if (!pen) { g.moveTo(X, y0); pen = true; }
+      g.lineTo(X, Y); lastX = X;
+    }
+    if (pen) { g.lineTo(lastX, y0); g.closePath(); }
+    g.fill();
+  }
+  g.globalAlpha = 1;
+};
+function valueAt(s, x) {
+  const xs = s.x;
+  let lo = 0, hi = xs.length - 1;
+  if (hi < 0) return NaN;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (!(xs[m] >= x)) lo = m + 1; else hi = m; }
+  let best = -1, bd = 40;
+  for (let k = Math.max(0, lo - 2); k <= Math.min(xs.length - 1, lo + 2); k++) {
+    const dd = Math.abs(xs[k] - x);
+    if (dd < bd && !isNaN(s.y[k])) { bd = dd; best = k; }
+  }
+  return best < 0 ? NaN : s.y[best];
+}
+LineChart.prototype.cross = function (x) {
+  const o = this.o, W = this.W, H = this.H;
+  o.clearRect(0, 0, W, H + 18);
+  if (x == null || this.empty) { this.ro.textContent = this.opt.idle ? this.opt.idle(this.series) : ''; return; }
+  const X = Math.round(this.px(x)) + 0.5;
+  o.strokeStyle = C.text2; o.lineWidth = 1;
+  o.beginPath(); o.moveTo(X, this.pt); o.lineTo(X, H); o.stroke();
+  const parts = [];
+  for (const s of this.series) {  // the selected lap last: its dot on top, its value first
+    const v = valueAt(s, x);
+    if (!isNaN(v)) {
+      o.fillStyle = s.color; o.strokeStyle = C.panel; o.lineWidth = 2;
+      o.beginPath(); o.arc(X, this.py(v), 4, 0, 2 * Math.PI); o.fill(); o.stroke();
+    }
+    parts.unshift((s.name ? s.name + ' ' : '') + (isNaN(v) ? '--' : (this.opt.sign && v > 0 ? '+' : '') + v.toFixed(this.opt.dec)));
+  }
+  this.ro.textContent = parts.join('　');
+};
+
+// ---------------------------------------------------------------- the page
+let D, LAPS, META, INFO, BEST, SEL, MATCH, MAPMODE = 'speed', CROSS = null, charts = [], mapView = null;
+
+function render() {
+  const sel = SEL, best = BEST;
+  // lap selector and table marks
+  for (const b of $('pick').querySelectorAll('button')) b.classList.toggle('on', +b.dataset.lap === (sel ? sel.lap : -1));
+  for (const tr of $('laps').querySelectorAll('tr.lap,tr.s')) tr.classList.toggle('sel', !!sel && +tr.dataset.lap === sel.lap);
+  MATCH = sel && best ? matchLap(D, sel, best) : null;
+  drawMap();
+  drawCharts();
+  drawG();
+  sectorTable();
+}
+
+function header() {
+  const name = META && META.course && META.course.name ? META.course.name : (LAPS.length ? 'コース' : '一般道');
+  $('title').textContent = name;
+  const start = META && META.start_utc_ms ? META.start_utc_ms : (D.n ? D.t[0] : 0);
+  const tz = META && META.tz_min != null ? META.tz_min : 540;
+  const dur = D.n ? (D.t[D.n - 1] - D.t[0]) / 60000 : 0;
+  $('when').textContent = (start ? localDate(start, tz) : '') + '　' + Math.round(dur) + ' 分' + (META && META.id ? '　' + META.id : '');
+  const tiles = $('tiles');
+  const tile = (k, v, cls) => { const t = el('div', 'tile' + (cls ? ' ' + cls : '')); t.appendChild(el('div', 'k', k)); t.appendChild(el('div', 'v num', v)); tiles.appendChild(t); };
+  tile('LAPS', String(LAPS.length));
+  if (BEST) tile('BEST L' + BEST.lap, lapText(BEST.ms), 'best');
+  const tb = theoreticalBest();
+  if (tb) tile('理論ベスト', lapText(tb.ms));
+  let vmax = 0; for (let i = 0; i < D.n; i++) if (D.spd[i] > vmax) vmax = D.spd[i];
+  tile('最高速', vmax.toFixed(1) + ' km/h');
+  if (/^https?:$/.test(location.protocol) && META && META.id) {
+    const a = el('a', null, 'このレポートをダウンロード'); a.href = '/report?id=' + encodeURIComponent(META.id) + '&save=1';
+    const b = el('a', null, 'セッション一覧へ'); b.href = '/';
+    $('links').appendChild(b); $('links').appendChild(a);
+  }
+}
+
+function theoreticalBest() {
+  const n = LAPS.reduce((m, L) => Math.max(m, L.sec.length), 0);
+  if (!n) return null;
+  const full = LAPS.filter(L => L.sec.length === n);
+  if (!full.length) return null;
+  const bestSec = [], from = [];
+  for (let j = 0; j < n; j++) {
+    let b = Infinity, k = 0;
+    for (const L of full) if (L.sec[j] < b) { b = L.sec[j]; k = L.lap; }
+    bestSec.push(b); from.push(k);
+  }
+  return {ms: bestSec.reduce((a, b) => a + b, 0), sec: bestSec, from: from, n: n};
+}
+
+function lapTable() {
+  const tab = $('laps');
+  tab.textContent = '';
+  if (!LAPS.length) {
+    const tr = el('tr'); const td = el('td', null, 'ラップはありません（S/F を通っていないか、コース外のセッションです）');
+    td.style.textAlign = 'left'; td.style.whiteSpace = 'normal'; tr.appendChild(td); tab.appendChild(tr);
+    return;
+  }
+  const tb = theoreticalBest(), ns = tb ? tb.n : 0;
+  const sg = (cells) => {  // the sectors under a lap, in columns that line up from lap to lap
+    const d = el('div', 'sg');
+    d.style.gridTemplateColumns = 'repeat(' + ns + ',1fr)';
+    for (const [text, cls] of cells) d.appendChild(el('span', cls, text));
+    const td = el('td'); td.colSpan = 4; td.appendChild(d); return td;
+  };
+  const head = el('tr');
+  for (const h of ['LAP', 'タイム', 'ベスト差', '最高速 km/h']) head.appendChild(el('th', null, h));
+  tab.appendChild(head);
+  const head2 = el('tr', 'hd2');
+  if (ns) { const th = el('th'); th.colSpan = 4; const d = el('div', 'sg'); d.style.gridTemplateColumns = 'repeat(' + ns + ',1fr)'; for (let j = 0; j < ns; j++) d.appendChild(el('span', null, 'S' + (j + 1))); th.appendChild(d); head2.appendChild(th); }
+  else { const th = el('th'); th.colSpan = 4; head2.appendChild(th); }
+  tab.appendChild(head2);
+  for (const L of LAPS) {
+    const best = L === BEST;
+    const tr = el('tr', 'lap' + (best ? ' best' : ''));
+    tr.dataset.lap = L.lap;
+    tr.appendChild(el('td', null, 'L' + L.lap));
+    tr.appendChild(el('td', 't', lapText(L.ms)));
+    const dd = L.ms - BEST.ms;
+    const td = el('td', dd > 0 ? 'pos' : dd < 0 ? 'neg' : null, best ? '' : deltaText(dd));
+    if (best) td.appendChild(el('span', 'badge', 'BEST'));
+    tr.appendChild(td);
+    tr.appendChild(el('td', null, L.maxKmh > 0 ? L.maxKmh.toFixed(1) : '--'));
+    const tr2 = el('tr', 's' + (best ? ' best' : ''));
+    tr2.dataset.lap = L.lap;
+    if (ns) tr2.appendChild(sg(Array.from({length: ns}, (_, j) => {
+      const v = L.sec[j];
+      return [v != null ? secText(v) : '--', v != null && v === tb.sec[j] ? 'bs' : null];
+    })));
+    else { const e = el('td'); e.colSpan = 4; tr2.appendChild(e); }
+    for (const r of [tr, tr2]) r.addEventListener('click', () => { SEL = L; render(); });
+    tab.appendChild(tr); tab.appendChild(tr2);
+  }
+  if (tb) {
+    const tr = el('tr', 'tb');
+    tr.appendChild(el('td', null, '理論'));
+    tr.appendChild(el('td', 't', lapText(tb.ms)));
+    tr.appendChild(el('td', 'neg', deltaText(tb.ms - BEST.ms)));
+    tr.appendChild(el('td', null, ''));
+    const tr2 = el('tr', 's tb');
+    tr2.appendChild(sg(tb.from.map((k, j) => [secText(tb.sec[j]) + ' L' + k, null])));
+    tab.appendChild(tr); tab.appendChild(tr2);
+  }
+}
+
+function picker() {
+  const p = $('pick');
+  p.textContent = '';
+  if (LAPS.length < 2) { p.hidden = true; return; }
+  p.appendChild(el('span', 'lbl', '表示'));
+  for (const L of LAPS) {
+    const b = el('button', 'num', 'L' + L.lap + ' ' + lapText(L.ms));
+    b.dataset.lap = L.lap;
+    if (L === BEST) b.appendChild(el('span', 'b', 'BEST'));
+    b.addEventListener('click', () => { SEL = L; render(); });
+    p.appendChild(b);
+  }
+}
+
+// ---- map
+const VIRIDIS = ['#46327e', '#365c8d', '#277f8e', '#1fa187', '#4ac16d', '#a0da39', '#fde725'];
+function ramp(t) {
+  t = Math.max(0, Math.min(1, t)) * (VIRIDIS.length - 1);
+  const i = Math.min(VIRIDIS.length - 2, Math.floor(t)), f = t - i;
+  const a = parseInt(VIRIDIS[i].slice(1), 16), b = parseInt(VIRIDIS[i + 1].slice(1), 16);
+  const ch = s => Math.round(((a >> s) & 255) * (1 - f) + ((b >> s) & 255) * f);
+  return 'rgb(' + ch(16) + ',' + ch(8) + ',' + ch(0) + ')';
+}
+function diverge(t) {  // -1 gained ... 0 ... +1 lost
+  const g = [0x5a, 0x5a, 0x5a], hi = t > 0 ? [0xff, 0x1e, 0x2d] : [0x2e, 0xcc, 0x40], f = Math.min(1, Math.abs(t));
+  return 'rgb(' + g.map((v, k) => Math.round(v * (1 - f) + hi[k] * f)).join(',') + ')';
+}
+
+function drawMap() {
+  const box = $('map');
+  box.textContent = '';
+  const W = boxWidth(box);
+  // view: the laps if there are any, else the whole session
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  const take = (i0, i1) => { for (let i = i0; i <= i1; i++) { const x = D.x[i], y = D.y[i]; if (isNaN(x)) continue; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } };
+  if (LAPS.length) for (const L of LAPS) take(L.i0, L.i1); else take(0, D.n - 1);
+  if (!(x1 > x0)) { box.style.height = '40px'; box.appendChild(el('div', 'note', '位置のデータがありません')); return; }
+  const pad = 14, sw = x1 - x0, sh = y1 - y0;
+  const H = Math.round(Math.min(W * 1.1, Math.max(W * 0.55, (W - 2 * pad) * sh / sw + 2 * pad)));
+  const k = Math.min((W - 2 * pad) / sw, (H - 2 * pad) / sh);
+  const ox = (W - sw * k) / 2, oy = (H - sh * k) / 2;
+  const P = (i) => [ox + (D.x[i] - x0) * k, H - oy - (D.y[i] - y0) * k];
+  box.style.height = H + 'px';
+  const g = layer(box, W, H), o = layer(box, W, H);
+  mapView = {o, W, H, P};
+  // the whole session, faint
+  g.strokeStyle = '#2a2a2a'; g.lineWidth = 1; g.beginPath();
+  let pen = false;
+  for (let i = 0; i < D.n; i++) {
+    if (isNaN(D.x[i])) { pen = false; continue; }
+    const [X, Y] = P(i);
+    if (pen && i > 0 && Math.abs(D.t[i] - D.t[i - 1]) < 2000) g.lineTo(X, Y); else g.moveTo(X, Y);
+    pen = true;
+  }
+  g.stroke();
+  const L = SEL || null;
+  const i0 = L ? L.i0 : 0, i1 = L ? L.i1 : D.n - 1;
+  // colour per segment
+  let vmin = Infinity, vmax = -Infinity;
+  for (let i = i0; i <= i1; i++) { const v = D.spd[i]; if (v < vmin) vmin = v; if (v > vmax) vmax = v; }
+  let rate = null, scale = 0;
+  if (MAPMODE === 'delta' && L && MATCH && L !== BEST) {
+    rate = new Float32Array(L.n).fill(NaN);
+    const w = 3, abs = [];
+    for (let kk = w; kk < L.n - w; kk++) {
+      const a = kk - w, b = kk + w, dx = MATCH.xb[b] - MATCH.xb[a];
+      const da = L.el[a] - MATCH.tb[a], db = L.el[b] - MATCH.tb[b];
+      if (dx > 3 && !isNaN(da) && !isNaN(db)) { rate[kk] = (db - da) / dx * 100; abs.push(Math.abs(rate[kk])); }
+    }
+    abs.sort((p, q) => p - q);
+    scale = Math.max(0.05, abs.length ? abs[Math.floor(abs.length * 0.9)] : 0.05);  // s per 100 m
+  }
+  g.lineWidth = 4; g.lineCap = 'round';
+  for (let i = i0; i < i1; i++) {
+    if (isNaN(D.x[i]) || isNaN(D.x[i + 1]) || D.t[i + 1] - D.t[i] > 2000) continue;
+    let c;
+    if (rate) { const r = rate[i - i0]; c = isNaN(r) ? '#444' : diverge(r / scale); }
+    else c = ramp((D.spd[i] - vmin) / Math.max(1, vmax - vmin));
+    const [ax, ay] = P(i), [bx, by] = P(i + 1);
+    g.strokeStyle = c; g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+  }
+  // S/F mark at the lap start
+  if (L && L.n) {
+    const [sx, sy] = P(L.i0);
+    g.fillStyle = C.text; g.strokeStyle = '#000'; g.lineWidth = 2;
+    g.beginPath(); g.arc(sx, sy, 5, 0, 2 * Math.PI); g.fill(); g.stroke();
+    g.font = '11px system-ui,-apple-system,sans-serif'; g.fillStyle = C.text2; g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.fillText('S/F', sx + 8, sy);
+  }
+  g.fillStyle = C.label; g.font = '11px system-ui,-apple-system,sans-serif'; g.textAlign = 'left'; g.textBaseline = 'top';
+  g.fillText('N↑', 6, 6);
+  // scale legend
+  const sc = $('mapscale');
+  sc.textContent = '';
+  const bar = el('canvas');
+  const lo = el('span', 'num'), hi = el('span', 'num');
+  sc.appendChild(lo); sc.appendChild(bar); sc.appendChild(hi);
+  bar.width = 200; bar.height = 8;
+  const bg = bar.getContext('2d');
+  for (let x = 0; x < 200; x++) { bg.fillStyle = rate ? diverge(x / 100 - 1) : ramp(x / 199); bg.fillRect(x, 0, 1, 8); }
+  if (rate) {
+    lo.textContent = '速くなった'; hi.textContent = '遅くなった';
+    $('mapnote').textContent = 'L' + L.lap + ' がベスト（L' + BEST.lap + '）より時間を縮めた所が緑、失った所が赤。濃い色で 100 m あたり ' + scale.toFixed(2) + ' 秒以上。';
+  } else {
+    lo.textContent = fmt(vmin, 0) + ' km/h'; hi.textContent = fmt(vmax, 0) + ' km/h';
+    $('mapnote').textContent = (L ? 'L' + L.lap + ' の速度' : 'セッション全体の速度') + '（灰色の線はセッション全体の走行）。' + (MAPMODE === 'delta' && L === BEST ? 'ベストラップどうしなので差はありません。' : '');
+  }
+  crossMap();
+}
+
+function crossMap() {
+  if (!mapView) return;
+  const {o, W, H, P} = mapView;
+  o.clearRect(0, 0, W, H);
+  if (CROSS == null || !SEL) return;
+  const dot = (i, color) => { const [X, Y] = P(i); o.fillStyle = color; o.strokeStyle = '#000'; o.lineWidth = 2; o.beginPath(); o.arc(X, Y, 6, 0, 2 * Math.PI); o.fill(); o.stroke(); };
+  if (BEST && BEST !== SEL) { const k = Math.min(BEST.n - 1, lowerBound(BEST.dist, CROSS, 0, BEST.n)); dot(BEST.i0 + k, C.blue); }
+  if (MATCH) { const k = Math.min(SEL.n - 1, lowerBound(MATCH.xb, CROSS, 0, SEL.n)); if (!isNaN(D.x[SEL.i0 + k])) dot(SEL.i0 + k, C.yellow); }
+}
+
+// ---- charts
+function drawCharts() {
+  const host = $('charts');
+  host.textContent = '';
+  charts = [];
+  const lg = $('legend');
+  lg.textContent = '';
+  const sel = SEL, best = BEST;
+  const same = !sel || !best || sel === best;
+  const key = (color, text) => { const s = el('span'); const k = el('span', 'key'); k.style.borderTopColor = color; s.appendChild(k); s.appendChild(document.createTextNode(text)); lg.appendChild(s); };
+  let xMax = 1;
+  const series = [];
+  const make = (arr) => {
+    const out = [];
+    if (sel && MATCH) out.push({name: 'L' + sel.lap, color: C.yellow, x: MATCH.xb, y: slice(arr, sel)});
+    if (best && !same) out.push({name: 'BEST', color: C.blue, x: best.dist, y: slice(arr, best)});
+    if (!sel) out.push({name: '', color: C.yellow, x: sessionDist(), y: arr.subarray(0, D.n)});
+    return out.reverse();  // the selected lap drawn last (on top)
+  };
+  if (sel) { key(C.yellow, 'L' + sel.lap + ' ' + lapText(sel.ms)); if (!same) key(C.blue, 'BEST L' + best.lap + ' ' + lapText(best.ms)); xMax = (best || sel).len || 1; }
+  else { const sd = sessionDist(); xMax = sd.length ? sd[sd.length - 1] || 1 : 1; key(C.yellow, 'セッション全体'); }
+  const vlines = [];
+  if (best) {  // sector lines where the best lap crossed them
+    let acc = 0;
+    for (let j = 0; j < best.sec.length - 1; j++) {
+      acc += best.sec[j] / 1000;
+      const k = Math.min(best.n - 1, lowerBound(best.el, acc, 0, best.n));
+      vlines.push({x: best.dist[k], label: 'S' + (j + 2)});
+    }
+  }
+  const idleMax = (dec, unit) => (ss) => ss.slice().reverse().map(s => { let m = -Infinity; for (const v of s.y) if (v > m) m = v; return (s.name ? s.name + ' ' : '') + '最高 ' + (m > -Infinity ? m.toFixed(dec) : '--') + unit; }).join('　');
+  const defs = [
+    {title: '速度 km/h', arr: D.spd, dec: 1, min: 0, idle: idleMax(0, '')},
+    {title: 'ベストとの差 秒（+ は遅い）', delta: true},
+    {title: '回転数 rpm', arr: D.rpm, dec: 0, min: 0, idle: idleMax(0, '')},
+    {title: 'アクセル %', arr: D.thr, dec: 0, min: 0, minRange: 100},
+    {title: 'ブースト bar', arr: D.boost, dec: 2, idle: idleMax(2, '')},
+  ];
+  const missing = [];
+  for (const def of defs) {
+    if (!def.delta && !hasData(def.arr)) { missing.push(def.title.split(' ')[0]); continue; }
+    if (def.delta) {
+      if (same || !MATCH) continue;
+      const y = new Float32Array(sel.n);
+      for (let k = 0; k < sel.n; k++) y[k] = sel.el[k] - MATCH.tb[k];
+      const c = new LineChart(host, {title: def.title, dec: 3, zero: true, sign: true, h: 96, minRange: 0.4,
+        idle: () => 'ゴール時 ' + deltaText(sel.ms - best.ms)});
+      c.layout(); c.set([{name: '', color: C.text, w: 1.5, fill: true, x: MATCH.xb, y: y}], xMax, vlines); c.draw(); c.cross(CROSS);
+      charts.push(c);
+      continue;
+    }
+    const c = new LineChart(host, {title: def.title, dec: def.dec, min: def.min, minRange: def.minRange, labels: charts.length === 0, idle: def.idle});
+    c.layout(); c.set(make(def.arr), xMax, vlines); c.draw(); c.cross(CROSS);
+    charts.push(c);
+  }
+  if (missing.length) host.appendChild(el('div', 'note', missing.join('・') + ': このセッションには記録がありません（CAN のデータなし）'));
+  for (const c of charts) attachCross(c);
+}
+
+function hasData(arr) {
+  for (let i = 0; i < D.n; i++) if (!isNaN(arr[i])) return true;
+  return false;
+}
+
+function slice(arr, L) { return arr.subarray(L.i0, L.i0 + L.n); }
+let SDIST = null;
+function sessionDist() {
+  if (SDIST) return SDIST;
+  SDIST = new Float32Array(D.n);
+  let s = 0;
+  for (let i = 1; i < D.n; i++) { const st = Math.hypot(D.x[i] - D.x[i - 1], D.y[i] - D.y[i - 1]); if (st < 200) s += st; SDIST[i] = s; }
+  return SDIST;
+}
+
+let raf = 0;
+function setCross(x) {
+  CROSS = x;
+  if (raf) return;
+  raf = requestAnimationFrame(() => { raf = 0; for (const c of charts) c.cross(CROSS); crossMap(); });
+}
+function attachCross(c) {
+  const box = c.box;
+  const at = (e) => { const r = box.getBoundingClientRect(); const px = e.clientX - r.left; return Math.max(0, Math.min(c.xMax, (px - c.pl) / (c.W - c.pl - c.pr) * c.xMax)); };
+  box.addEventListener('pointerdown', e => setCross(at(e)));
+  box.addEventListener('pointermove', e => { if (e.pointerType === 'mouse' || e.pressure > 0 || e.buttons) setCross(at(e)); });
+}
+
+function sectorTable() {
+  const tab = $('sectab');
+  tab.textContent = '';
+  const sel = SEL, best = BEST;
+  if (!sel || !best || !best.sec.length || sel.sec.length !== best.sec.length) return;
+  const head = el('tr');
+  for (const h of ['セクター', 'L' + sel.lap, 'BEST L' + best.lap, '差', '最低速 L' + sel.lap + '／BEST']) head.appendChild(el('th', null, h));
+  tab.appendChild(head);
+  let acc = 0;
+  const minSpeed = (L, a, b) => { let m = Infinity; for (let k = 0; k < L.n; k++) if (L.el[k] >= a && L.el[k] <= b && D.spd[L.i0 + k] < m) m = D.spd[L.i0 + k]; return m; };
+  let accB = 0;
+  for (let j = 0; j < best.sec.length; j++) {
+    const tr = el('tr');
+    const dd = sel.sec[j] - best.sec[j];
+    tr.appendChild(el('td', null, 'S' + (j + 1)));
+    tr.appendChild(el('td', null, secText(sel.sec[j])));
+    tr.appendChild(el('td', null, secText(best.sec[j])));
+    tr.appendChild(el('td', dd > 0 ? 'pos' : dd < 0 ? 'neg' : null, sel === best ? '' : deltaText(dd)));
+    const ms = minSpeed(sel, acc / 1000, (acc + sel.sec[j]) / 1000), mb = minSpeed(best, accB / 1000, (accB + best.sec[j]) / 1000);
+    tr.appendChild(el('td', null, fmt(ms, 0) + '／' + fmt(mb, 0)));
+    acc += sel.sec[j]; accB += best.sec[j];
+    tab.appendChild(tr);
+  }
+}
+
+// ---- G
+function drawG() {
+  const box = $('gplot');
+  box.textContent = '';
+  const lg = $('glegend');
+  lg.textContent = '';
+  const W = Math.min(boxWidth(box), 420), H = W;
+  box.style.height = H + 'px'; box.style.width = W + 'px';
+  const g = layer(box, W, H);
+  const cx = W / 2, cy = H / 2;
+  let gmax = 1.0;
+  const sets = [];
+  if (BEST && SEL && BEST !== SEL) sets.push([BEST, C.blue, 'BEST L' + BEST.lap]);
+  if (SEL) sets.push([SEL, C.yellow, 'L' + SEL.lap]); else sets.push([{i0: 0, n: D.n}, C.yellow, 'セッション全体']);
+  for (const [L] of sets) for (let k = 0; k < L.n; k++) { const i = L.i0 + k; const m = Math.max(Math.abs(D.latG[i]), Math.abs(D.lonG[i])); if (m > gmax && m < 3) gmax = m; }
+  gmax = Math.ceil(gmax * 2) / 2;
+  const R = W / 2 - 18, k = R / gmax;
+  g.strokeStyle = C.grid; g.lineWidth = 1;
+  g.font = '10px system-ui,-apple-system,sans-serif'; g.fillStyle = C.label; g.textAlign = 'left'; g.textBaseline = 'bottom';
+  for (let r = 0.5; r <= gmax + 1e-6; r += 0.5) { g.beginPath(); g.arc(cx, cy, r * k, 0, 2 * Math.PI); g.stroke(); g.fillText(r.toFixed(1) + 'G', cx + r * k * 0.71 + 2, cy - r * k * 0.71); }
+  g.beginPath(); g.moveTo(cx - R, cy + 0.5); g.lineTo(cx + R, cy + 0.5); g.moveTo(cx + 0.5, cy - R); g.lineTo(cx + 0.5, cy + R); g.stroke();
+  g.textAlign = 'center'; g.textBaseline = 'top'; g.fillText('加速', cx, 2); g.textBaseline = 'bottom'; g.fillText('減速', cx, H - 2);
+  g.textBaseline = 'middle'; g.textAlign = 'left'; g.fillText('右', W - 14, cy - 8); g.textAlign = 'right'; g.fillText('左', 14, cy - 8);
+  let any = false;
+  for (const [L, color, name] of sets) {
+    g.fillStyle = color; g.globalAlpha = 0.45;
+    for (let kk = 0; kk < L.n; kk++) {
+      const i = L.i0 + kk, x = D.latG[i], y = D.lonG[i];
+      if (isNaN(x) || isNaN(y)) continue;
+      any = true;
+      g.fillRect(cx + x * k - 1.5, cy - y * k - 1.5, 3, 3);
+    }
+    g.globalAlpha = 1;
+    const s = el('span'); const kk2 = el('span', 'key'); kk2.style.borderTopColor = color; s.appendChild(kk2); s.appendChild(document.createTextNode(name)); lg.appendChild(s);
+  }
+  if (!any) { g.fillStyle = C.label; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('G のデータがありません', cx, cy + 20); }
+}
+
+// ---- vehicle and notes
+function stats(arr) { let lo = Infinity, hi = -Infinity, first = NaN, last = NaN; for (let i = 0; i < D.n; i++) { const v = arr[i]; if (isNaN(v)) continue; if (isNaN(first)) first = v; last = v; if (v < lo) lo = v; if (v > hi) hi = v; } return {lo, hi, first, last, ok: hi >= lo}; }
+function car() {
+  const box = $('car');
+  box.textContent = '';
+  const kv = (k, v, s) => { const d = el('div', 'kv'); d.appendChild(el('div', 'k', k)); d.appendChild(el('div', 'v num', v)); if (s) d.appendChild(el('div', 's', s)); box.appendChild(d); };
+  const rpm = stats(D.rpm), water = stats(D.water), fuel = stats(D.fuel), boost = stats(D.boost);
+  kv('最高回転', rpm.ok ? Math.round(rpm.hi) + ' rpm' : '--');
+  kv('水温', water.ok ? water.lo.toFixed(0) + '〜' + water.hi.toFixed(0) + ' °C' : '--', water.ok ? '最低〜最高' : 'データなし');
+  kv('燃料', fuel.ok ? fuel.first.toFixed(0) + ' → ' + fuel.last.toFixed(0) + ' %' : '--', fuel.ok ? '開始 → 終了（' + (fuel.first - fuel.last).toFixed(0) + ' % 使用）' : 'データなし');
+  kv('最大ブースト', boost.ok ? boost.hi.toFixed(2) + ' bar' : '--');
+  // water temperature over the session time
+  const wb = $('water');
+  wb.textContent = '';
+  if (!water.ok) { wb.style.display = 'none'; return; }
+  const W = boxWidth(wb), H = 70;
+  wb.style.height = (H + 16) + 'px';
+  const g = layer(wb, W, H + 16);
+  const t0 = D.t[0], t1 = D.t[D.n - 1], lo = Math.floor(water.lo / 5) * 5, hi = Math.max(lo + 10, Math.ceil(water.hi / 5) * 5);
+  const X = t => 34 + (W - 40) * (t - t0) / Math.max(1, t1 - t0), Y = v => 4 + (H - 8) * (1 - (v - lo) / (hi - lo));
+  g.font = '10px system-ui,-apple-system,sans-serif'; g.fillStyle = C.label; g.textAlign = 'right'; g.textBaseline = 'middle';
+  g.strokeStyle = C.grid; g.lineWidth = 1;
+  for (const v of [lo, hi]) { g.beginPath(); g.moveTo(34, Math.round(Y(v)) + 0.5); g.lineTo(W - 6, Math.round(Y(v)) + 0.5); g.stroke(); g.fillText(v + '°', 30, Y(v)); }
+  g.textAlign = 'left'; g.textBaseline = 'top'; g.fillText('水温（セッションの時間）', 36, H + 3);
+  g.textAlign = 'right'; g.fillText(Math.round((t1 - t0) / 60000) + ' 分', W - 6, H + 3);
+  g.strokeStyle = C.text2; g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
+  let pen = false;
+  for (let i = 0; i < D.n; i += 5) { const v = D.water[i]; if (isNaN(v)) { pen = false; continue; } if (pen) g.lineTo(X(D.t[i]), Y(v)); else { g.moveTo(X(D.t[i]), Y(v)); pen = true; } }
+  g.stroke();
+}
+
+function about() {
+  const gen = INFO && INFO.generator ? INFO.generator : '';
+  const rows = INFO ? INFO.rows_out + ' 点（元のログ ' + INFO.rows_in + ' 行を ' + INFO.period_ms + ' ms 以上の間隔に間引き' + (INFO.rows_bad ? '、読めない行 ' + INFO.rows_bad : '') + '）' : D.n + ' 点';
+  $('about').textContent = 'データ: ' + rows + (gen ? '。作成: ' + gen : '') + (META && META.fw ? '。記録: ' + META.fw : '') + '。';
+  const ul = $('notes');
+  ul.textContent = '';
+  const notes = [].concat(META && Array.isArray(META.notes) ? META.notes : [], INFO && Array.isArray(INFO.notes) ? INFO.notes : []);
+  for (const n of notes) ul.appendChild(el('li', null, String(n)));
+}
+
+// ---------------------------------------------------------------- start
+async function start() {
+  const t0 = performance.now();
+  const b = await loadBlocks();
+  META = parseJson(b.meta);
+  INFO = parseJson(b.info);
+  LAPS = parseLaps(b.laps);
+  D = parseLog(b.log || '');
+  if (!D.n) throw new Error('ログに行がありません');
+  project(D);
+  buildLaps(D, LAPS);
+  LAPS = LAPS.filter(L => L.n > 1);
+  BEST = LAPS.length ? LAPS.reduce((a, L) => (L.ms < a.ms ? L : a), LAPS[0]) : null;
+  // shown first: the fastest lap after the best one (the closest comparison), else the best
+  const others = LAPS.filter(L => L !== BEST).sort((p, q) => p.ms - q.ms);
+  SEL = others.length ? others[0] : BEST;
+  $('status').hidden = true;
+  $('app').hidden = false;
+  header();
+  picker();
+  lapTable();
+  car();
+  about();
+  render();
+  for (const btn of $('mapmode').querySelectorAll('button')) {
+    btn.addEventListener('click', () => { MAPMODE = btn.dataset.m; for (const x of $('mapmode').querySelectorAll('button')) x.classList.toggle('on', x === btn); drawMap(); });
+  }
+  let lastW = window.innerWidth, timer = 0;
+  window.addEventListener('resize', () => {
+    if (window.innerWidth === lastW) return;
+    lastW = window.innerWidth;
+    clearTimeout(timer);
+    timer = setTimeout(() => { render(); car(); }, 150);
+  });
+  window.__ltReport = {ready: true, ms: Math.round(performance.now() - t0), rows: D.n, laps: LAPS.map(L => ({lap: L.lap, ms: L.ms, sec: L.sec}))};
+}
+
+start().catch(e => {
+  const s = $('status');
+  s.hidden = false; s.className = 'err';
+  s.textContent = 'レポートを表示できません: ' + (e && e.message ? e.message : e);
+  window.__ltReport = {ready: false, error: String(e && e.message ? e.message : e)};
+});
+})();
+</script>
+</body>
+</html>

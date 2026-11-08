@@ -1,0 +1,17 @@
+{
+  "_note": "袖ヶ浦: RaceChrono のトラック定義（VBO 書き出しの [laptiming]、実装計画 §0）。S/F 幅 50 m（ピットロードも 1 周と数える）、Split 幅 30 m",
+  "version": 1,
+  "courses": [
+    {
+      "id": "sodegaura",
+      "name": "袖ヶ浦フォレストレースウェイ",
+      "min_lap_s": 30,
+      "gates": [
+        {"type": "sf", "name": "Start/Finish", "lat": 35.3949090, "lon": 140.0880580, "heading": 31.1, "width": 50},
+        {"type": "split", "name": "Split 1", "lat": 35.3922588, "lon": 140.0909627, "heading": 250.1, "width": 30},
+        {"type": "split", "name": "Split 2", "lat": 35.3940090, "lon": 140.0887060, "heading": 232.1, "width": 30},
+        {"type": "split", "name": "Split 3", "lat": 35.3924410, "lon": 140.0892150, "heading": 252.1, "width": 30}
+      ]
+    }
+  ]
+}
