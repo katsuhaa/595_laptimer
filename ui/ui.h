@@ -53,8 +53,17 @@ struct ViewState {
   int8_t shiftSel;      // shift editor: selected value 0..3
   int16_t gatePick;     // gate page: picked track point, -1 none
   bool flashRed;        // last drawn flash phase
+  uint8_t wifiView;     // Wi-Fi page: 0 list, 1 scan, 2 keyboard, 3 join result (read only)
+  uint8_t wifiDialog;   // Wi-Fi page: 0 none, 1 delete, 2 open network (read only)
+  uint8_t wifiLayer;    // Wi-Fi keyboard: 0 lower, 1 upper, 2 symbols (read only)
+  bool wifiHidden;      // Wi-Fi keyboard: text shown as dots (read only)
 };
 ViewState viewState();
-void testSetView(const ViewState &v);  // apply the view state fields (screen must match model.screen)
+void testSetView(const ViewState &v);  // apply the view state fields (screen must match model.screen; not the wifi ones)
+
+// Wi-Fi keyboard: centre of the key that types code (printable ASCII) on layer (0 lower, 1 upper, 2 symbols),
+// or of a control of the keyboard view (TK_*). False when there is no such key.
+enum TestKey : uint32_t { TK_SHIFT = 0x100, TK_LAYER, TK_BACK, TK_SHOW, TK_OK, TK_CANCEL };
+bool testWifiKey(uint8_t layer, uint32_t code, int16_t *x, int16_t *y);
 
 }  // namespace ui

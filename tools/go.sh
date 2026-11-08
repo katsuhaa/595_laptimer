@@ -474,13 +474,9 @@ if missing:
     sys.exit(1)
 print("glyphs: every UI and app character is in the fonts")
 PY
-  if [ ! -f "$LT_SKETCH/wifi_secrets.h" ] && [ -f firmware/webcheck/wifi_secrets.h ]; then
-    cp firmware/webcheck/wifi_secrets.h "$LT_SKETCH/wifi_secrets.h"
-    echo "wifi: using the networks of firmware/webcheck/wifi_secrets.h"
-  fi
-  if [ ! -f "$LT_SKETCH/wifi_secrets.h" ]; then
-    echo "note: no built-in Wi-Fi networks. Make $LT_SKETCH/wifi_secrets.h like firmware/webcheck/wifi_secrets_example.h"
-    echo "      (until then the board cannot join a network, and wifi.json cannot be uploaded)"
+  # the Wi-Fi networks are registered on the device screen (settings > Wi-Fi), not built in
+  if [ -f "$LT_SKETCH/wifi_secrets.h" ]; then
+    echo "note: $LT_SKETCH/wifi_secrets.h is not used (Wi-Fi is set on the device screen); it can be deleted"
   fi
 }
 

@@ -90,6 +90,7 @@ constexpr int kHeaderH = 64;  // band 64 px (+2 px line)
 constexpr int kBodyY = 66;
 constexpr int kRowH = 76;
 void drawHeader(uint8_t screen, const char *aux);  // inside the current clip
+void drawHeaderBand(const PageStyle &st);          // the band alone: tint, slanted colour band, line
 int pageIndex(uint8_t screen);                     // 0 drive .. 4 settings, -1 other
 
 // ---------------------------------------------------------------- formatting (integers only)
@@ -124,6 +125,10 @@ struct RectList {
 
 // ---------------------------------------------------------------- view state
 enum TouchMode : uint8_t { TM_IDLE = 0, TM_PENDING, TM_HSWIPE, TM_VSCROLL, TM_DEAD };
+// Wi-Fi page (SC_WIFI): what the page shows (ViewState::wifiView / wifiDialog use the same numbers)
+enum WifiView : uint8_t { WV_LIST = 0, WV_SCAN, WV_KEYS, WV_RESULT };
+enum WifiDialog : uint8_t { WD_NONE = 0, WD_FORGET, WD_OPEN };
+enum WifiKbMode : uint8_t { KM_PASS = 0, KM_NAME };
 struct State {
   uint16_t *layer = nullptr;
   bool full = true;
@@ -141,6 +146,12 @@ struct State {
   int8_t editor = -1;
   int8_t shiftSel = 0;
   int16_t gatePick = -1;
+  uint8_t wifiView = WV_LIST;  // Wi-Fi page; the typed text itself is kept in scr_pages.cpp (wifiReset wipes it)
+  uint8_t wifiDialog = WD_NONE;
+  uint8_t wifiMode = KM_PASS;  // keyboard: password or network name
+  bool wifiShift = false;      // keyboard: upper case (⇧ stays until tapped again)
+  bool wifiSym = false;        // keyboard: symbols layer
+  bool wifiHidden = false;     // keyboard: text drawn as dots
   // touch
   uint8_t mode = TM_IDLE;
   int16_t x0 = 0, y0 = 0, lx = 0, ly = 0, maxMove = 0, scroll0 = 0;
@@ -148,6 +159,7 @@ struct State {
 };
 extern State g;
 void resetView();
+void wifiReset();  // Wi-Fi page view state back to the list; wipes the typed text (called by resetView)
 bool flashPhase(const Model &m, uint32_t now);  // true = red phase (also updates g.nextDue)
 uint16_t flashBg(const Model &m);                // background colour of the red phase
 
@@ -155,7 +167,7 @@ uint16_t flashBg(const Model &m);                // background colour of the red
 void selftestFrame(const Model &m, bool full);
 void circuitFrame(const Model &m, uint32_t now, bool full);
 void streetFrame(const Model &m, uint32_t now, bool full);
-void pagesFrame(const Model &m, bool full);  // SC_LAPS .. SC_GATE
+void pagesFrame(const Model &m, bool full);  // SC_LAPS .. SC_WIFI
 // pages: content height of the scrolled body (for clamping), tap handling
 int pageScrollMax(const Model &m);
 void pageTap(const Model &m, int x, int y, ActionQueue &out);

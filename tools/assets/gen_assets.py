@@ -116,6 +116,10 @@ KANJI_NAMES = (  # common family names (Wi-Fi names like "名前のiPhone")
 )
 JP_BROAD = uniq(HIRA, KATA, JP_PUNCT, KANJI_G1, KANJI_G2, KANJI_CAR, KANJI_PLACE, KANJI_NAMES)
 
+# 14 px Japanese: the Wi-Fi hint (ui/scr_pages.cpp WIFI_HINT, under the scan list and the "見つかりません" result).
+# Only these words are drawn at 14 px; a word added there must be added here (render counts missing glyphs).
+WIFI_HINT_14 = "2.4 GHz のネットワークだけ表示されます（iPhone のインターネット共有は「互換性を優先」をオン）"
+
 
 def spec(name, px, parts, ref):
     return dict(name=name, px=px, parts=parts, ref=ref)
@@ -154,7 +158,7 @@ SPECS = [
     cp(28, True),
     cp(30, True),
     jp(13, False, "油温・"),  # circuit: oil pill
-    jp(14, False, "・"),      # circuit: speed / GPS line
+    jp(14, False, uniq("・", WIFI_HINT_14)),  # circuit: speed / GPS line; Wi-Fi hint
     jp(18, False, uniq(JP_ALL, JP_BROAD)),  # secondary text, course names, Wi-Fi names
     jp(22, False, uniq(JP_ALL, JP_BROAD)),  # values, badges, session cards, self-test values
     jp(26, True, JP_ALL),

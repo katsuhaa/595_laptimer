@@ -19,6 +19,7 @@ void resetView() {
   g.shiftSel = 0;
   g.gatePick = -1;
   g.mode = TM_IDLE;
+  wifiReset();
 }
 
 // Shift flash: 6 Hz, 83 ms red then 83 ms black, counted from the moment the app set model.flash (starts red)
@@ -88,7 +89,7 @@ static const int kSwipeMin = 50;   // horizontal swipe threshold [px]
 static const uint32_t kTapMinMs = 60;  // shorter touches do nothing (brushes, vibration)
 
 static bool scrollable(uint8_t screen) {
-  return screen == SC_LAPS || screen == SC_MAINT || screen == SC_DATA || screen == SC_SETTINGS;
+  return screen == SC_LAPS || screen == SC_MAINT || screen == SC_DATA || screen == SC_SETTINGS || screen == SC_WIFI;
 }
 static uint8_t pageAt(int idx) {
   static const uint8_t order[5] = { SC_DRIVE, SC_LAPS, SC_MAINT, SC_DATA, SC_SETTINGS };
@@ -136,7 +137,7 @@ void touch(const Input &inp, uint32_t nowMs, const Model &m, ActionQueue &out) {
   g.mode = TM_IDLE;
   if (mode == TM_HSWIPE) {
     if (iabs(dx) < kSwipeMin || iabs(dx) * 2 < iabs(dy) * 3) return;  // too short or too steep
-    if (m.screen == SC_SELFTEST || m.screen == SC_GATE || pageModal()) return;
+    if (m.screen == SC_SELFTEST || m.screen == SC_GATE || m.screen == SC_WIFI || pageModal()) return;
     const int idx = pageIndex(m.screen);
     if (idx < 0) return;
     const int to = dx < 0 ? idx + 1 : idx - 1;  // finger to the left = next page
@@ -213,6 +214,10 @@ ViewState viewState() {
   v.shiftSel = g.shiftSel;
   v.gatePick = g.gatePick;
   v.flashRed = g.flashRed;
+  v.wifiView = g.wifiView;
+  v.wifiDialog = g.wifiDialog;
+  v.wifiLayer = (uint8_t)(g.wifiSym ? 2 : (g.wifiShift ? 1 : 0));
+  v.wifiHidden = g.wifiHidden;
   return v;
 }
 void testSetView(const ViewState &v) {

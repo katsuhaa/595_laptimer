@@ -26,6 +26,7 @@ enum Screen : uint8_t {
   SC_DATA,
   SC_SETTINGS,
   SC_GATE,          // settings > gate setting (child page of SC_SETTINGS)
+  SC_WIFI,          // settings > Wi-Fi: registered networks, scan, on-screen keyboard (child page of SC_SETTINGS)
   SC_COUNT
 };
 enum DriveKind : uint8_t { DRIVE_CIRCUIT = 0, DRIVE_STREET };
@@ -184,6 +185,37 @@ struct GatePage {
   uint8_t month = 0, day = 0, hour = 0, minute = 0;
 };
 
+// ---------------------------------------------------------------- Wi-Fi (settings > Wi-Fi, SC_WIFI)
+// The networks are registered on this page (the password is typed on the on-screen keyboard) and kept in the
+// device (NVS). The typed text stays inside the UI until ACT_WIFI_SAVE; the model never holds a password.
+enum WifiJoin : uint8_t {
+  WJ_IDLE = 0,      // nothing asked
+  WJ_TRYING,        // joining joinSsid
+  WJ_OK,            // joined joinSsid (connected / ssid / ip below)
+  WJ_NOT_FOUND,     // joinSsid not seen in the scan
+  WJ_BAD_PASSWORD,  // refused by the access point (handshake / authentication failure)
+  WJ_FAILED,        // other failure (timeout, no address)
+};
+struct WifiFound {
+  char ssid[33];  // UTF-8, may contain characters the fonts do not have (drawn as boxes)
+  int8_t rssi;    // dBm
+  bool locked;    // needs a password
+  bool saved;     // already registered
+};
+struct WifiPage {
+  uint8_t nSaved = 0;
+  char saved[8][33];       // registered networks, in the order they are tried (first = first tried)
+  bool scanning = false;   // a scan is running (after ACT_WIFI_SCAN)
+  bool scanOk = false;     // found[] holds the result of the last finished scan
+  uint8_t nFound = 0;
+  WifiFound found[16];     // strongest first, hidden networks (empty name) left out
+  bool connected = false;  // joined a network (any of the registered ones)
+  char ssid[33] = "";      // the joined network
+  char ip[16] = "";
+  uint8_t join = WJ_IDLE;  // WifiJoin: result for joinSsid after ACT_WIFI_SAVE
+  char joinSsid[33] = "";
+};
+
 // ---------------------------------------------------------------- the whole model
 struct Model {
   uint8_t screen = SC_SELFTEST;  // Screen, chosen by the app
@@ -225,6 +257,7 @@ struct Model {
   DataPage data;
   SettingsPage settings;
   GatePage gate;
+  WifiPage wifi;
 };
 
 // ---------------------------------------------------------------- touch input (600x450 landscape coordinates)
@@ -245,6 +278,10 @@ enum ActionKind : uint8_t {
   ACT_SETTING,        // arg = SettingKey, value
   ACT_RECORD_STOP,    // 記録 (settings) tapped while recording
   ACT_RECORD_RESUME,  // ... while stopped
+  ACT_WIFI_SCAN,      // Wi-Fi page: search for networks (model.wifi.scanning, then found[])
+  ACT_WIFI_SAVE,      // register ssid with pass ("" = open network; else 8..63 characters or 64 hex digits),
+                      // replacing the password of a registered one; it goes first in the list and is joined now
+  ACT_WIFI_FORGET,    // remove the registered network ssid
 };
 enum SettingKey : uint8_t {
   SET_SHIFT_GREEN = 0,  // value [rpm]
@@ -263,6 +300,8 @@ struct Action {
   int32_t latE7 = 0, lonE7 = 0;
   float headingDeg = 0.0f;
   char id[24] = "";
+  char ssid[33] = "";  // ACT_WIFI_SAVE / ACT_WIFI_FORGET
+  char pass[65] = "";  // ACT_WIFI_SAVE
 };
 struct ActionQueue {
   static constexpr int kMax = 8;

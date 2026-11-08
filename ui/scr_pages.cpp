@@ -1,4 +1,4 @@
-// ui/scr_pages.cpp - boot self-test (§3) and the stopped pages: laps, maintenance, data, settings, gate (§7)
+// ui/scr_pages.cpp - boot self-test (§3) and the stopped pages: laps, maintenance, data, settings, gate, Wi-Fi (§7)
 // Each page is drawn as a header and a body; a part is redrawn (inside its clip) when its key changes.
 #include <math.h>
 #include <stdio.h>
@@ -295,7 +295,7 @@ static void dataBody() {
     size_t u = 0;
     t[0] = 0;
     for (int i = 0; i < d.nNetworks && i < 4; i++) u += (size_t)snprintf(t + u, u < sizeof t ? sizeof t - u : 0, "%s%d. %s", i ? "   " : "", i + 1, d.network[i]);
-    if (!d.nNetworks) snprintf(t, sizeof t, "wifi.json がありません");
+    if (!d.nNetworks) snprintf(t, sizeof t, "未登録（設定 → Wi-Fi）");
     const TextSet sets[2] = { T22, T18 };
     mixDrawFit(sets, 2, 16, y0 + 96, 568, t, C_WHITE);
   }
@@ -431,7 +431,7 @@ static void settingsBody() {
     if (y + h <= kBodyY || y >= gfx::H) continue;
     const float cy = (float)y + kRowH * 0.5f;
     mixDraw(T28, 20, baseC(FONT_JP28, cy), NAMES[i], C_WHITE);
-    const bool tappable = i <= SR_REC;
+    const bool tappable = i <= SR_REC || i == SR_WIFI;
     if (tappable) gfx::drawText(FONT_CP28, 568, baseC(FONT_CP28, cy), "›", C_LABEL);
     const float xr = tappable ? 556 : 580;
     switch (i) {
@@ -548,8 +548,9 @@ static void settingsTap(const Model &m, int x, int y, ActionQueue &out) {
         break;
       }
       case SR_GATE:
+      case SR_WIFI:
         a.kind = ACT_PAGE;
-        a.arg = SC_GATE;
+        a.arg = i == SR_GATE ? SC_GATE : SC_WIFI;
         out.push(a);
         break;
       case SR_OIL:
@@ -751,6 +752,637 @@ static void gateTap(const Model &m, int x, int y, ActionQueue &out) {
   }
 }
 
+// ================================================================ Wi-Fi (settings > Wi-Fi)
+// Views: the registered networks (list), the scan result, the on-screen keyboard, the join result. The typed
+// text stays in s_wt until ACT_WIFI_SAVE and is wiped as soon as it is not needed (キャンセル, save, a result
+// without 入力しなおす, leaving the page). Drawn as items with boxes and keys (header or text field, body, hint,
+// keys, buttons, dialog), redrawn bottom-up inside the clip like the street screen.
+static const int WF_ROW0 = 92;     // list: first row, under the status line and the label
+static const int WF_HINT_Y = 398;  // scan: the hint under the list
+static const int WF_BACK_W = 150;  // tap width of ‹ 設定 / ‹ 戻る
+static const float WF_RESCAN_X = 452, WF_RESCAN_Y = 9, WF_RESCAN_W = 132, WF_RESCAN_H = 46;
+static const float WF_SHOW_X = 488, WF_SHOW_Y = 9, WF_SHOW_W = 96, WF_SHOW_H = 46;
+static const float WF_TEXT_X = 30, WF_TEXT_R = 472;  // text field (in the band): title line, typed text
+// keyboard: 5 rows on a 10-column grid; keys 53.2 x 54 (pitch 57.2 x 58); buttons 64 px under it
+static const float KB_X0 = 16, KB_PX = 57.2f, KB_GAP = 4, KB_Y0 = 74, KB_PY = 58, KB_KH = 54;
+static const float KB_BY = 370, KB_BH = 64, KB_OKX = 16, KB_OKW = 360, KB_CANX = 392, KB_CANW = 192;
+static const float WR_BY = 362, WR_BH = 72;  // result buttons: 16..292 and 308..584, a single one 170..430
+static const char *const WIFI_HINT[2] = { "2.4 GHz のネットワークだけ表示されます", "（iPhone のインターネット共有は「互換性を優先」をオン）" };
+
+struct WifiText {
+  char text[65];     // typed: a password (up to 64 characters) or a network name (up to 32)
+  uint8_t len;
+  uint16_t rev;      // changes with every edit: redraw key of the field (the text itself is never hashed)
+  char target[33];   // network the password is for, then the network of the join result
+  char retry[65];    // the saved password while its result can still offer 入力しなおす
+  bool open;         // the saved network has no password
+  char dlgSsid[33];  // network of the open dialog
+};
+static WifiText s_wt;
+static void wipe(void *p, size_t n) {  // volatile: the optimiser keeps the stores
+  volatile uint8_t *b = (volatile uint8_t *)p;
+  while (n--) *b++ = 0;
+}
+void wifiReset() {
+  g.wifiView = WV_LIST;
+  g.wifiDialog = WD_NONE;
+  g.wifiMode = KM_PASS;
+  g.wifiShift = g.wifiSym = g.wifiHidden = false;
+  wipe(&s_wt, sizeof s_wt);
+}
+
+// ---- keyboard layout. Layers: lower, upper (⇧ toggles and stays), symbols. Digits on every layer; - . _ @ on
+// lower / upper, the other 28 punctuation characters on symbols: all of 0x20..0x7E can be typed.
+//   1 2 3 4 5 6 7 8 9 0 | q w e r t y u i o p | a s d f g h j k l - | ⇧ z x c v b n m ⌫ | #+= space . _ @
+//   symbols: 1..0 | ! @ # $ % ^ & * ( ) | [ ] { } < > ' " ` ~ | + = / \ | : ; ⌫ | abc space . , ?
+enum : uint8_t { K_SHIFT = 1, K_LAYER, K_BACK };  // control keys (codes below 0x20)
+struct KbKey {
+  uint8_t code;          // printable ASCII or K_*
+  uint8_t row, c2, w2;   // row 0..4, start and width in half columns
+};
+static const char *const KB_CHARS[3][5] = {
+  { "1234567890", "qwertyuiop", "asdfghjkl-", "zxcvbnm", "._@" },
+  { "1234567890", "QWERTYUIOP", "ASDFGHJKL-", "ZXCVBNM", "._@" },
+  { "1234567890", "!@#$%^&*()", "[]{}<>'\"`~", "+=/\\|:;", ".,?" },
+};
+static const int KB_MAX = 48;
+static int kbKeys(int layer, KbKey *k) {
+  int n = 0;
+  for (int r = 0; r < 5; r++) {
+    if (r == 3 && layer != 2) k[n++] = KbKey{ K_SHIFT, 3, 0, 3 };
+    if (r == 4) {
+      k[n++] = KbKey{ K_LAYER, 4, 0, 4 };
+      k[n++] = KbKey{ ' ', 4, 4, 10 };
+    }
+    const int c0 = r == 3 ? 3 : (r == 4 ? 14 : 0);
+    const char *s = KB_CHARS[layer][r];
+    for (int i = 0; s[i]; i++) k[n++] = KbKey{ (uint8_t)s[i], (uint8_t)r, (uint8_t)(c0 + 2 * i), 2 };
+    if (r == 3) k[n++] = KbKey{ K_BACK, 3, 17, 3 };
+  }
+  return n;
+}
+static void kbRect(const KbKey &k, float &x, float &y, float &w) {  // key height KB_KH
+  x = KB_X0 + (float)k.c2 * KB_PX * 0.5f;
+  y = KB_Y0 + (float)k.row * KB_PY;
+  w = (float)k.w2 * KB_PX * 0.5f - KB_GAP;
+}
+static int kbLayer() {
+  return g.wifiSym ? 2 : (g.wifiShift ? 1 : 0);
+}
+static bool kbValid() {  // password: 8..63 characters or 64 hex digits; name: 1..32 bytes
+  if (g.wifiMode == KM_NAME) return s_wt.len >= 1 && s_wt.len <= 32;
+  if (s_wt.len >= 8 && s_wt.len <= 63) return true;
+  if (s_wt.len != 64) return false;
+  for (int i = 0; i < 64; i++) {
+    const char c = s_wt.text[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
+  }
+  return true;
+}
+
+// ---- small drawings
+static void shiftIcon(float cx, float cy, uint16_t c) {  // ⇧
+  gfx::Pt p[7] = { { cx, cy - 12 }, { cx + 12, cy + 1 }, { cx + 5, cy + 1 }, { cx + 5, cy + 11 }, { cx - 5, cy + 11 }, { cx - 5, cy + 1 }, { cx - 12, cy + 1 } };
+  gfx::fillPoly(p, 7, c);
+}
+static void backIcon(float cx, float cy, uint16_t c, uint16_t bg) {  // ⌫
+  gfx::Pt p[5] = { { cx - 17, cy }, { cx - 7, cy - 11 }, { cx + 16, cy - 11 }, { cx + 16, cy + 11 }, { cx - 7, cy + 11 } };
+  gfx::fillPoly(p, 5, c);
+  crossMark(cx + 4, cy, 17, bg);
+}
+static int rssiLevel(int8_t rssi) {  // 1..4 bars
+  return rssi >= -55 ? 4 : (rssi >= -65 ? 3 : (rssi >= -75 ? 2 : 1));
+}
+static void signalBars(float x, float yb, int level) {  // 4 bars of growing height, bottom at yb
+  for (int i = 0; i < 4; i++) {
+    const float h = 7.0f + 5.0f * (float)i;
+    gfx::fillRoundRect(x + 7.0f * (float)i, yb - h, 5, h, 1.5f, i < level ? C_WHITE : C_DOT);
+  }
+}
+static void lockIcon(float cx, float cy, uint16_t c) {  // padlock, about 16 x 19
+  gfx::fillArc(cx, cy - 2, 3.6f, 6.4f, 180, 360, c);
+  gfx::fillRoundRect(cx - 8, cy - 2, 16, 12, 2.5f, c);
+}
+// centred at cx with the first set that fits in maxW, else cut with "…"
+static void drawFitC(const TextSet *sets, int n, float cx, float base, float maxW, const char *s, uint16_t c) {
+  for (int i = 0; i < n; i++) {
+    const float w = mixWidth(sets[i], s);
+    if (w <= maxW) {
+      mixDraw(sets[i], cx - w * 0.5f, base, s, c);
+      return;
+    }
+  }
+  mixDrawFit(sets, n, cx - maxW * 0.5f, base, maxW, s, c);
+}
+static uint8_t wifiShown(const Model &m) {  // join state for the result view (IDLE / other network: still trying)
+  const WifiPage &w = m.wifi;
+  if (w.join == WJ_IDLE || w.join == WJ_TRYING || strcmp(w.joinSsid, s_wt.target) != 0) return WJ_TRYING;
+  return w.join;
+}
+static bool wifiRetryable(uint8_t st) {
+  return !s_wt.open && (st == WJ_BAD_PASSWORD || st == WJ_FAILED);
+}
+static bool wifiScanList(const WifiPage &w) {  // the scan result is shown (else one line: searching / none)
+  return w.scanOk && !w.scanning && w.nFound > 0;
+}
+static int wifiScanRows(const WifiPage &w) {  // rows before 名前を入力
+  return wifiScanList(w) ? (w.nFound > 16 ? 16 : w.nFound) : 1;
+}
+static int wifiSaved(const WifiPage &w) {
+  return w.nSaved > 8 ? 8 : w.nSaved;
+}
+
+// ---- items
+static void wifiHeader() {  // list, scan, result
+  const Model &m = *s_m;
+  const PageStyle &st = pageStyle(SC_WIFI);
+  drawHeaderBand(st);
+  const float cy = 32;
+  float x = mixDraw(T22, 30, baseC(FONT_JP22, cy), g.wifiView == WV_SCAN ? "‹ 戻る" : "‹ 設定", C_YELLOW);
+  x = gfx::drawText(FONT_CP30, x + 22, baseC(FONT_CP30, cy), "Wi-Fi", st.color);
+  if (g.wifiView != WV_SCAN) return;
+  const TextSet sets[1] = { T18 };
+  mixDrawFit(sets, 1, x + 16, baseC(FONT_JP18, cy), WF_RESCAN_X - 16 - (x + 16), "ネットワークを追加", C_LABEL);
+  const bool can = !m.wifi.scanning;
+  button(WF_RESCAN_X, WF_RESCAN_Y, WF_RESCAN_W, WF_RESCAN_H, T22, "再検索", can ? C_LABEL : C_OFF, C_BG, can ? C_WHITE : C_DOT);
+}
+static void wifiField() {  // keyboard view: the band holds the title, the typed text and 表示 / 隠す
+  drawHeaderBand(pageStyle(SC_WIFI));
+  char t[80], cnt[16];
+  snprintf(cnt, sizeof cnt, "%u 文字", (unsigned)s_wt.len);
+  const float tb = baseC(FONT_JP18, 19), cw = mixWidth(T18, cnt);
+  mixDraw(T18, WF_TEXT_R - cw, tb, cnt, C_LABEL);
+  if (g.wifiMode == KM_NAME) snprintf(t, sizeof t, "ネットワーク名");
+  else snprintf(t, sizeof t, "パスワード ・ %s", s_wt.target);
+  const TextSet sets[1] = { T18 };
+  mixDrawFit(sets, 1, WF_TEXT_X, tb, WF_TEXT_R - cw - 16 - WF_TEXT_X, t, C_SUB);
+  if (g.wifiMode == KM_PASS) button(WF_SHOW_X, WF_SHOW_Y, WF_SHOW_W, WF_SHOW_H, T22, g.wifiHidden ? "表示" : "隠す", C_LABEL, C_BG, C_WHITE);
+  // the text; when it is longer than the field its start is cut ("…"), so the end and the cursor stay visible
+  const float cy = 46, base = baseC(FONT_CP26, cy), right = WF_TEXT_R - 8;
+  float x = WF_TEXT_X;
+  if (g.wifiHidden) {  // one dot per character; the text itself is not drawn
+    const float pitch = 15;
+    int first = 0;
+    if (WF_TEXT_X + (float)s_wt.len * pitch > right) {
+      x = gfx::drawText(FONT_CP26, x, base, "…", C_LABEL) + 4;
+      first = s_wt.len - (int)((right - x) / pitch);
+    }
+    for (int i = first; i < s_wt.len; i++, x += pitch) gfx::fillCircle(x + 6, cy, 4.5f, C_WHITE);
+  } else {
+    const char *s = s_wt.text;
+    if (WF_TEXT_X + gfx::textWidth(FONT_CP26, s) > right) {
+      x = gfx::drawText(FONT_CP26, x, base, "…", C_LABEL) + 2;
+      while (*s && x + gfx::textWidth(FONT_CP26, s) > right) s++;
+    }
+    x = gfx::drawText(FONT_CP26, x, base, s, C_WHITE);
+  }
+  gfx::fillRect((int)x + 2, (int)cy - 13, 2, 27, C_YELLOW);  // cursor
+}
+static void wifiKeys() {
+  KbKey k[KB_MAX];
+  const int layer = kbLayer(), n = kbKeys(layer, k);
+  for (int i = 0; i < n; i++) {
+    float x, y, w;
+    kbRect(k[i], x, y, w);
+    const float cx = x + w * 0.5f, cy = y + KB_KH * 0.5f;
+    switch (k[i].code) {
+      case K_SHIFT:
+        if (g.wifiShift) gfx::fillRoundRect(x, y, w, KB_KH, 8, C_WHITE);
+        else gfx::frameRoundRect(x, y, w, KB_KH, 8, 2, C_OFF, C_BG);
+        shiftIcon(cx, cy, g.wifiShift ? C_BG : C_SUB);
+        break;
+      case K_BACK:
+        gfx::frameRoundRect(x, y, w, KB_KH, 8, 2, C_OFF, C_BG);
+        backIcon(cx, cy, C_SUB, C_BG);
+        break;
+      case K_LAYER:
+        gfx::frameRoundRect(x, y, w, KB_KH, 8, 2, C_OFF, C_BG);
+        textC(FONT_CP22, cx, baseC(FONT_CP22, cy), layer == 2 ? (g.wifiShift ? "ABC" : "abc") : "#+=", C_SUB);
+        break;
+      case ' ':
+        gfx::fillRoundRect(x, y, w, KB_KH, 8, C_OFF);
+        textC(FONT_CP18, cx, baseC(FONT_CP18, cy), "space", C_LABEL);
+        break;
+      default: {
+        const char s[2] = { (char)k[i].code, 0 };
+        gfx::fillRoundRect(x, y, w, KB_KH, 8, C_OFF);
+        textC(FONT_CP26, cx, baseC(FONT_CP26, cy), s, C_WHITE);
+        break;
+      }
+    }
+  }
+}
+static void wifiButtons() {
+  const bool ok = kbValid();
+  button(KB_OKX, KB_BY, KB_OKW, KB_BH, T26, g.wifiMode == KM_NAME ? "次へ" : "保存して接続", ok ? C_YELLOW : C_OFF, ok ? C_YELLOW : C_BG, ok ? C_BG : C_DOT);
+  button(KB_CANX, KB_BY, KB_CANW, KB_BH, T26, "キャンセル", C_LABEL, C_BG, C_WHITE);
+}
+static void wifiListBody() {
+  const WifiPage &w = s_m->wifi;
+  const float y0 = (float)(kBodyY - g.scroll), sy = y0 + 32;
+  char t[96];
+  if (w.connected) {
+    gfx::fillCircle(24, sy, 6, C_GREEN);
+    snprintf(t, sizeof t, "接続中: %s ・ %s", w.ssid, w.ip[0] ? w.ip : "---");
+    const TextSet sets[2] = { T22, T18 };
+    mixDrawFit(sets, 2, 40, baseC(FONT_JP22, sy), 584 - 40, t, C_WHITE);
+  } else {
+    gfx::fillCircle(24, sy, 6, C_DOT);
+    mixDraw(T22, 40, baseC(FONT_JP22, sy), "Wi-Fi 未接続", C_SUB);
+  }
+  mixDraw(T18, 16, y0 + 80, "登録済み（上から順に試します）", C_LABEL);
+  const int n = wifiSaved(w);
+  for (int i = 0; i < n; i++) {
+    const float y = y0 + (float)(WF_ROW0 + i * kRowH), cy = y + kRowH * 0.5f;
+    if (y + kRowH <= kBodyY || y >= gfx::H) continue;
+    snprintf(t, sizeof t, "%d", i + 1);
+    gfx::drawText(FONT_CP22, 20, baseC(FONT_CP22, cy), t, C_LABEL);
+    float xr = 584;
+    if (w.connected && strcmp(w.saved[i], w.ssid) == 0) {
+      const float bw = mixWidth(T18, "接続中") + 28;
+      badge(xr - bw, cy - 15, bw, 30, 15, T18, "接続中", C_GREEN, C_BG);
+      xr -= bw + 16;
+    }
+    const TextSet sets[2] = { T28, T22 };
+    mixDrawFit(sets, 2, 52, baseC(FONT_JP28, cy), xr - 52, w.saved[i], C_WHITE);
+    gfx::fillRect(0, (int)y + kRowH - 1, gfx::W, 1, C_LINE);
+  }
+  float y = y0 + (float)WF_ROW0;
+  if (!n) {
+    mixDraw(T22, 20, baseC(FONT_JP22, y + kRowH * 0.5f), "登録したネットワークはありません", C_LABEL);
+    gfx::fillRect(0, (int)y + kRowH - 1, gfx::W, 1, C_LINE);
+  }
+  y += (float)((n ? n : 1) * kRowH);
+  const float cy = y + kRowH * 0.5f;
+  mixDraw(T28, 20, baseC(FONT_JP28, cy), "＋ ネットワークを追加", n < 8 ? C_YELLOW : C_DOT);
+  if (n >= 8) mixDrawR(T18, 584, baseC(FONT_JP18, cy), "8 件まで", C_LABEL);
+}
+static void wifiScanBody() {
+  const WifiPage &w = s_m->wifi;
+  const float y0 = (float)(kBodyY - g.scroll);
+  const int rows = wifiScanRows(w);
+  if (!wifiScanList(w)) {
+    const bool busy = w.scanning || !w.scanOk;
+    mixDraw(T26, 20, baseC(FONT_JP26, y0 + kRowH * 0.5f), busy ? "検索中…" : "ネットワークが見つかりません", C_SUB);
+    gfx::fillRect(0, (int)y0 + kRowH - 1, gfx::W, 1, C_LINE);
+  }
+  for (int i = 0; i < rows && wifiScanList(w); i++) {
+    const WifiFound &f = w.found[i];
+    const float y = y0 + (float)(i * kRowH), cy = y + kRowH * 0.5f;
+    if (y + kRowH <= kBodyY || y >= WF_HINT_Y) continue;
+    signalBars(556, cy + 11, rssiLevel(f.rssi));
+    if (f.locked) lockIcon(533, cy, C_SUB);
+    float xr = 514;
+    if (f.saved) {
+      const float bw = mixWidth(T18, "登録済み") + 28;
+      badge(xr - bw, cy - 15, bw, 30, 15, T18, "登録済み", C_OFF, C_SUB);
+      xr -= bw;
+    }
+    const TextSet sets[2] = { T28, T22 };
+    mixDrawFit(sets, 2, 20, baseC(FONT_JP28, cy), xr - 14 - 20, f.ssid, C_WHITE);
+    gfx::fillRect(0, (int)y + kRowH - 1, gfx::W, 1, C_LINE);
+  }
+  const float cy = y0 + (float)(rows * kRowH) + kRowH * 0.5f;
+  const float x = mixDraw(T28, 20, baseC(FONT_JP28, cy), "名前を入力", C_YELLOW);
+  mixDraw(T22, x + 8, baseC(FONT_JP28, cy), "（一覧にないとき）", C_LABEL);
+}
+static void wifiHintFoot() {  // scan view: under the list
+  gfx::fillRect(0, WF_HINT_Y, gfx::W, 1, C_OFF);
+  mixDraw(T14, 16, (float)WF_HINT_Y + 22, WIFI_HINT[0], C_LABEL);
+  mixDraw(T14, 16, (float)WF_HINT_Y + 42, WIFI_HINT[1], C_LABEL);
+}
+static void wifiResultBody() {
+  const Model &m = *s_m;
+  const uint8_t st = wifiShown(m);
+  const char *title = "接続中…";
+  uint16_t c = C_WHITE;
+  switch (st) {
+    case WJ_OK: title = "接続しました"; break;
+    case WJ_BAD_PASSWORD: title = "パスワードが違います"; break;
+    case WJ_NOT_FOUND: title = "見つかりません"; break;
+    case WJ_FAILED: title = "接続できません"; break;
+    default: break;
+  }
+  if (st == WJ_OK) c = C_GREEN;
+  else if (st != WJ_TRYING) c = C_RED;
+  mixDrawC(T30, 300, 170, title, c);
+  char t[96];
+  if (st == WJ_OK) snprintf(t, sizeof t, "%s ・ %s", s_wt.target, m.wifi.ip[0] ? m.wifi.ip : "---");
+  else snprintf(t, sizeof t, "%s", s_wt.target);
+  const TextSet sets[2] = { T22, T18 };
+  drawFitC(sets, 2, 300, 218, 568, t, st == WJ_OK ? C_WHITE : C_SUB);
+  if (st == WJ_NOT_FOUND) {
+    mixDrawC(T14, 300, 262, WIFI_HINT[0], C_LABEL);
+    mixDrawC(T14, 300, 282, WIFI_HINT[1], C_LABEL);
+  }
+  if (st == WJ_TRYING) return;
+  if (wifiRetryable(st)) {
+    button(16, WR_BY, 276, WR_BH, T26, "入力しなおす", C_YELLOW, C_YELLOW, C_BG);
+    button(308, WR_BY, 276, WR_BH, T26, st == WJ_BAD_PASSWORD ? "やめる" : "OK", C_LABEL, C_BG, C_WHITE);
+  } else {
+    button(170, WR_BY, 260, WR_BH, T26, "OK", C_YELLOW, C_YELLOW, C_BG);
+  }
+}
+static void wifiDialogDraw() {  // over the list or the scan result (like the maintenance dialog)
+  gfx::setAlpha(170);
+  gfx::fillRect(0, kBodyY, gfx::W, kBodyH, C_BG);
+  gfx::setAlpha(255);
+  gfx::frameRoundRect(DLG_X, DLG_Y, DLG_W, DLG_H, 12, 2, C_SUB, C_PANEL);
+  const TextSet sets[2] = { T28, T22 };
+  drawFitC(sets, 2, 300, DLG_Y + 60, DLG_W - 40, s_wt.dlgSsid, C_WHITE);
+  if (g.wifiDialog == WD_FORGET) {
+    mixDrawC(T22, 300, DLG_Y + 112, "を削除しますか", C_SUB);
+    button(DLG_B1X, DLG_BY, DLG_BW, 72, T26, "削除", C_RED, C_RED, C_WHITE);
+  } else {
+    mixDrawC(T22, 300, DLG_Y + 112, "パスワードなしのネットワークです。", C_SUB);
+    mixDrawC(T22, 300, DLG_Y + 148, "登録しますか", C_SUB);
+    button(DLG_B1X, DLG_BY, DLG_BW, 72, T26, "登録する", C_YELLOW, C_YELLOW, C_BG);
+  }
+  button(DLG_B2X, DLG_BY, DLG_BW, 72, T26, "キャンセル", C_LABEL, C_PANEL, C_WHITE);
+}
+
+// ---- scene: item boxes and keys; a changed item is redrawn with everything that overlaps it
+enum { WI_HEAD = 0, WI_BODY, WI_HINT, WI_KEYS, WI_BTNS, WI_DLG, WI_COUNT };
+struct WifiScene {
+  gfx::Rect box[WI_COUNT];
+  uint32_t key[WI_COUNT];
+};
+static WifiScene s_ws;
+static void wifiScene(const Model &m, WifiScene &v) {
+  const WifiPage &w = m.wifi;
+  for (int i = 0; i < WI_COUNT; i++) {
+    v.box[i] = gfx::Rect{ 0, 0, 0, 0 };
+    v.key[i] = 0;
+  }
+  const uint32_t k0 = hashU(kHash0, g.wifiView);
+  v.box[WI_HEAD] = rectXY(0, 0, gfx::W, kBodyY);
+  if (g.wifiView == WV_KEYS) {
+    const uint32_t k = hashU(hashU(hashU(k0, g.wifiMode), g.wifiHidden), (uint32_t)s_wt.rev << 8 | s_wt.len);
+    v.key[WI_HEAD] = hashStr(k, s_wt.target);
+    v.box[WI_KEYS] = rectXY(0, kBodyY, gfx::W, (int)KB_BY - 4);
+    v.key[WI_KEYS] = hashU(hashU(k0, (uint32_t)kbLayer()), g.wifiShift);
+    v.box[WI_BTNS] = rectXY(0, (int)KB_BY - 4, gfx::W, gfx::H);
+    v.key[WI_BTNS] = hashU(hashU(k0, g.wifiMode), kbValid());
+  } else {
+    v.key[WI_HEAD] = hashU(k0, w.scanning);
+    v.box[WI_BODY] = rectXY(0, kBodyY, gfx::W, g.wifiView == WV_SCAN ? WF_HINT_Y : gfx::H);
+    uint32_t k = hashU(k0, (uint32_t)g.scroll);
+    if (g.wifiView == WV_LIST) {
+      k = hashU(hashU(k, w.nSaved), w.connected);
+      for (int i = 0; i < wifiSaved(w); i++) k = hashStr(k, w.saved[i]);
+      k = hashStr(hashStr(k, w.ssid), w.ip);
+    } else if (g.wifiView == WV_SCAN) {
+      k = hashU(hashU(hashU(k, w.scanning), w.scanOk), w.nFound);
+      for (int i = 0; i < wifiScanRows(w) && wifiScanList(w); i++) {
+        const WifiFound &f = w.found[i];
+        k = hashU(hashStr(k, f.ssid), (uint32_t)rssiLevel(f.rssi) | (uint32_t)f.locked << 4 | (uint32_t)f.saved << 5);
+      }
+      v.box[WI_HINT] = rectXY(0, WF_HINT_Y, gfx::W, gfx::H);
+      v.key[WI_HINT] = 1;
+    } else {
+      k = hashU(hashU(k, wifiShown(m)), s_wt.open);
+      k = hashStr(hashStr(k, s_wt.target), w.ip);
+    }
+    v.key[WI_BODY] = k;
+  }
+  if (g.wifiDialog != WD_NONE) {
+    v.box[WI_DLG] = rectXY(0, kBodyY, gfx::W, gfx::H);
+    v.key[WI_DLG] = hashStr(hashU(k0, g.wifiDialog), s_wt.dlgSsid);
+  }
+}
+static void wifiItem(int id) {
+  switch (id) {
+    case WI_HEAD:
+      if (g.wifiView == WV_KEYS) wifiField();
+      else wifiHeader();
+      break;
+    case WI_BODY:
+      if (g.wifiView == WV_LIST) wifiListBody();
+      else if (g.wifiView == WV_SCAN) wifiScanBody();
+      else wifiResultBody();
+      break;
+    case WI_HINT: wifiHintFoot(); break;
+    case WI_KEYS: wifiKeys(); break;
+    case WI_BTNS: wifiButtons(); break;
+    case WI_DLG: wifiDialogDraw(); break;
+    default: break;
+  }
+}
+static void wifiRefresh(const WifiScene &v, const gfx::Rect &r) {  // every item inside its own box
+  gfx::setClip(r);
+  gfx::fillAll(C_BG);
+  for (int i = 0; i < WI_COUNT; i++) {
+    const gfx::Rect &b = v.box[i];
+    if (!overlap(b, r)) continue;
+    gfx::setClip(b.x0 > r.x0 ? b.x0 : r.x0, b.y0 > r.y0 ? b.y0 : r.y0, b.x1 < r.x1 ? b.x1 : r.x1, b.y1 < r.y1 ? b.y1 : r.y1);
+    wifiItem(i);
+  }
+  gfx::clearClip();
+}
+static void wifiFrame(const Model &m, bool full) {
+  if (g.scroll < 0) g.scroll = 0;
+  if (g.wifiView == WV_RESULT) {  // a result without 入力しなおす is shown: the password copy is not needed
+    const uint8_t st = wifiShown(m);
+    if (st != WJ_TRYING && !wifiRetryable(st)) wipe(s_wt.retry, sizeof s_wt.retry);
+  }
+  WifiScene v;
+  wifiScene(m, v);
+  if (full) {
+    wifiRefresh(v, rectXY(0, 0, gfx::W, gfx::H));
+    s_ws = v;
+    return;
+  }
+  static RectList inv;
+  inv.clear();
+  for (int i = 0; i < WI_COUNT; i++) {
+    if (v.key[i] == s_ws.key[i] && memcmp(&v.box[i], &s_ws.box[i], sizeof(gfx::Rect)) == 0) continue;
+    inv.add(s_ws.box[i]);
+    inv.add(v.box[i]);
+  }
+  for (int i = 0; i < inv.n; i++) wifiRefresh(v, inv.r[i]);
+  s_ws = v;
+}
+static int wifiScrollMax(const Model &m) {
+  int h = 0, vis = kBodyH;
+  if (g.wifiView == WV_LIST) {
+    const int n = wifiSaved(m.wifi);
+    h = WF_ROW0 + (n ? n : 1) * kRowH + kRowH;
+  } else if (g.wifiView == WV_SCAN) {
+    h = (wifiScanRows(m.wifi) + 1) * kRowH;
+    vis = WF_HINT_Y - kBodyY;
+  }
+  return h > vis ? h - vis : 0;
+}
+
+// ---- taps
+static void wifiOpenKeys(uint8_t mode, const char *ssid) {  // an empty keyboard, lower case, text shown
+  g.wifiView = WV_KEYS;
+  g.wifiMode = mode;
+  g.wifiShift = g.wifiSym = g.wifiHidden = false;
+  wipe(s_wt.text, sizeof s_wt.text);
+  s_wt.len = 0;
+  s_wt.rev++;
+  if (ssid != s_wt.target) copyText(s_wt.target, sizeof s_wt.target, ssid);
+}
+static void wifiToList() {
+  wipe(s_wt.retry, sizeof s_wt.retry);
+  g.wifiView = WV_LIST;
+  g.scroll = 0;
+}
+static void wifiSave(const char *pass, ActionQueue &out) {  // ACT_WIFI_SAVE(target, pass) -> result view
+  Action a;
+  a.kind = ACT_WIFI_SAVE;
+  copyText(a.ssid, sizeof a.ssid, s_wt.target);
+  copyText(a.pass, sizeof a.pass, pass);
+  const bool ok = out.push(a);
+  wipe(a.pass, sizeof a.pass);
+  if (!ok) return;  // queue full: nothing sent, the keyboard stays
+  g.wifiView = WV_RESULT;
+}
+static void kbTap(int x, int y) {
+  KbKey k[KB_MAX];
+  const int n = kbKeys(kbLayer(), k);
+  for (int i = 0; i < n; i++) {
+    float kx, ky, kw;
+    kbRect(k[i], kx, ky, kw);
+    const float hx = KB_GAP * 0.5f, hy = (KB_PY - KB_KH) * 0.5f;  // the gaps belong to the nearest key
+    if (!inBox(x, y, kx - hx, ky - hy, kw + 2 * hx, KB_KH + 2 * hy)) continue;
+    switch (k[i].code) {
+      case K_SHIFT: g.wifiShift = !g.wifiShift; break;
+      case K_LAYER: g.wifiSym = !g.wifiSym; break;
+      case K_BACK:
+        if (s_wt.len) {
+          s_wt.text[--s_wt.len] = 0;
+          s_wt.rev++;
+        }
+        break;
+      default:
+        if (s_wt.len < (g.wifiMode == KM_NAME ? 32 : 64)) {
+          s_wt.text[s_wt.len++] = (char)k[i].code;
+          s_wt.text[s_wt.len] = 0;
+          s_wt.rev++;
+        }
+        break;
+    }
+    return;
+  }
+}
+static void wifiTap(const Model &m, int x, int y, ActionQueue &out) {
+  const WifiPage &w = m.wifi;
+  Action a;
+  if (g.wifiDialog != WD_NONE) {  // modal: only its two buttons
+    if (inBox(x, y, DLG_B1X, DLG_BY, DLG_BW, 72)) {
+      if (g.wifiDialog == WD_FORGET) {
+        a.kind = ACT_WIFI_FORGET;
+        copyText(a.ssid, sizeof a.ssid, s_wt.dlgSsid);
+        out.push(a);
+      } else {
+        copyText(s_wt.target, sizeof s_wt.target, s_wt.dlgSsid);
+        wipe(s_wt.retry, sizeof s_wt.retry);
+        s_wt.open = true;
+        wifiSave("", out);
+      }
+      g.wifiDialog = WD_NONE;
+    } else if (inBox(x, y, DLG_B2X, DLG_BY, DLG_BW, 72)) {
+      g.wifiDialog = WD_NONE;
+    }
+    return;
+  }
+  if (g.wifiView == WV_KEYS) {
+    if (y < kBodyY) {
+      if ((float)x >= WF_SHOW_X - 8 && g.wifiMode == KM_PASS) g.wifiHidden = !g.wifiHidden;
+      return;
+    }
+    if ((float)y < KB_BY - 4) {
+      kbTap(x, y);
+      return;
+    }
+    if ((float)x >= KB_CANX - 8) {  // キャンセル
+      wipe(s_wt.text, sizeof s_wt.text);
+      s_wt.len = 0;
+      s_wt.rev++;
+      g.wifiView = WV_SCAN;
+      g.scroll = 0;
+      return;
+    }
+    if ((float)x >= KB_OKX + KB_OKW + 8 || !kbValid()) return;
+    if (g.wifiMode == KM_NAME) {  // 次へ: the password of the typed network
+      copyText(s_wt.target, sizeof s_wt.target, s_wt.text);
+      wifiOpenKeys(KM_PASS, s_wt.target);
+      return;
+    }
+    s_wt.open = false;
+    memcpy(s_wt.retry, s_wt.text, sizeof s_wt.retry);
+    wifiSave(s_wt.text, out);
+    if (g.wifiView != WV_RESULT) {
+      wipe(s_wt.retry, sizeof s_wt.retry);
+      return;
+    }
+    wipe(s_wt.text, sizeof s_wt.text);
+    s_wt.len = 0;
+    s_wt.rev++;
+    return;
+  }
+  if (y < kBodyY) {
+    if (x < WF_BACK_W) {
+      if (g.wifiView == WV_SCAN) {
+        g.wifiView = WV_LIST;
+        g.scroll = 0;
+      } else {
+        a.kind = ACT_PAGE;
+        a.arg = SC_SETTINGS;
+        out.push(a);
+      }
+    } else if (g.wifiView == WV_SCAN && (float)x >= WF_RESCAN_X - 12 && !w.scanning) {
+      a.kind = ACT_WIFI_SCAN;
+      out.push(a);
+    }
+    return;
+  }
+  const int cy = y - kBodyY + g.scroll;
+  if (g.wifiView == WV_LIST) {
+    const int n = wifiSaved(w), add = WF_ROW0 + (n ? n : 1) * kRowH;
+    if (cy >= WF_ROW0 && cy < WF_ROW0 + n * kRowH) {
+      copyText(s_wt.dlgSsid, sizeof s_wt.dlgSsid, w.saved[(cy - WF_ROW0) / kRowH]);
+      g.wifiDialog = WD_FORGET;
+    } else if (cy >= add && cy < add + kRowH && n < 8) {
+      a.kind = ACT_WIFI_SCAN;
+      out.push(a);
+      g.wifiView = WV_SCAN;
+      g.scroll = 0;
+    }
+  } else if (g.wifiView == WV_SCAN) {
+    if (y >= WF_HINT_Y) return;
+    const int i = cy / kRowH, rows = wifiScanRows(w);
+    if (i < rows && wifiScanList(w)) {
+      const WifiFound &f = w.found[i];
+      if (f.locked) {
+        wifiOpenKeys(KM_PASS, f.ssid);
+      } else {
+        copyText(s_wt.dlgSsid, sizeof s_wt.dlgSsid, f.ssid);
+        g.wifiDialog = WD_OPEN;
+      }
+    } else if (i == rows) {
+      wifiOpenKeys(KM_NAME, "");
+    }
+  } else {  // result
+    const uint8_t st = wifiShown(m);
+    if (st == WJ_TRYING || y < WR_BY || y >= WR_BY + WR_BH) return;
+    if (wifiRetryable(st)) {
+      if (x < 300) {  // 入力しなおす: the keyboard with the previous text
+        wifiOpenKeys(KM_PASS, s_wt.target);
+        memcpy(s_wt.text, s_wt.retry, sizeof s_wt.text);
+        s_wt.len = (uint8_t)strlen(s_wt.text);
+        wipe(s_wt.retry, sizeof s_wt.retry);
+      } else {
+        wifiToList();
+      }
+    } else if (x >= 170 && x < 430) {
+      wifiToList();
+    }
+  }
+}
+
 // ================================================================ dispatch
 static void bodyKeyLaps(uint32_t &h, const Model &m) {
   h = hashBytes(h, m.laps.lap, sizeof(LapRow) * m.laps.n);
@@ -788,6 +1420,10 @@ static void bodyFn() {
 void pagesFrame(const Model &m, bool full) {
   s_m = &m;
   s_sc = m.screen;
+  if (m.screen == SC_WIFI) {
+    wifiFrame(m, full);
+    return;
+  }
   if (m.screen == SC_GATE) {
     uint32_t kh = hashStr(kHash0, m.gate.course);
     kh = hashU(hashU(kh, m.gate.startOk), (uint32_t)m.gate.month << 24 | (uint32_t)m.gate.day << 16 | (uint32_t)m.gate.hour << 8 | m.gate.minute);
@@ -841,12 +1477,14 @@ int pageScrollMax(const Model &m) {
     case SC_MAINT: h = m.maint.n * kRowH; break;
     case SC_DATA: h = dataHeight(m); break;
     case SC_SETTINGS: h = settingsHeight(m); break;
+    case SC_WIFI: return wifiScrollMax(m);
     default: return 0;
   }
   return h > kBodyH ? h - kBodyH : 0;
 }
 
 bool pageModal() {
+  if (g.shown == SC_WIFI) return g.wifiDialog != WD_NONE || g.wifiView == WV_KEYS || g.wifiView == WV_RESULT;
   return g.shown == SC_MAINT && g.maintDialog >= 0;
 }
 
@@ -881,9 +1519,44 @@ void pageTap(const Model &m, int x, int y, ActionQueue &out) {
       if (y >= kBodyY) settingsTap(m, x, y, out);
       break;
     case SC_GATE: gateTap(m, x, y, out); break;
+    case SC_WIFI: wifiTap(m, x, y, out); break;
     default: break;
   }
 }
 
 }  // namespace in
+
+bool testWifiKey(uint8_t layer, uint32_t code, int16_t *x, int16_t *y) {
+  using namespace in;
+  float bx = 0, by = 0, bw = 0, bh = KB_KH;
+  if (code == TK_SHOW) {
+    bx = WF_SHOW_X;
+    by = WF_SHOW_Y;
+    bw = WF_SHOW_W;
+    bh = WF_SHOW_H;
+  } else if (code == TK_OK || code == TK_CANCEL) {
+    bx = code == TK_OK ? KB_OKX : KB_CANX;
+    by = KB_BY;
+    bw = code == TK_OK ? KB_OKW : KB_CANW;
+    bh = KB_BH;
+  } else {
+    uint32_t want = 0;
+    if (code == TK_SHIFT) want = K_SHIFT;
+    else if (code == TK_LAYER) want = K_LAYER;
+    else if (code == TK_BACK) want = K_BACK;
+    else if (code >= 0x20 && code < 0x7F) want = code;
+    if (!want || layer > 2) return false;
+    KbKey k[KB_MAX];
+    const int n = kbKeys(layer, k);
+    int hit = -1;
+    for (int i = 0; i < n && hit < 0; i++)
+      if (k[i].code == want) hit = i;
+    if (hit < 0) return false;
+    kbRect(k[hit], bx, by, bw);
+  }
+  *x = (int16_t)lroundf(bx + bw * 0.5f);
+  *y = (int16_t)lroundf(by + bh * 0.5f);
+  return true;
+}
+
 }  // namespace ui

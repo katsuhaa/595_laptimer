@@ -209,8 +209,8 @@ void fillData(const app::Live& s, int tzMin) {
   ui::DataPage& d = g_m->data;
   net::Status ns;
   net::status(&ns);
-  net::Config nc;
-  net::config(&nc);
+  net::Names nc;
+  net::names(&nc);
   copyStr(d.hostname, sizeof d.hostname, nc.hostname);
   d.wifiOk = ns.connected;
   copyStr(d.ip, sizeof d.ip, ns.ip);
@@ -235,7 +235,48 @@ void fillData(const app::Live& s, int tzMin) {
     c.downloaded = si.downloaded;
   }
   d.nNetworks = 0;
-  for (int i = 0; i < nc.count && d.nNetworks < 4; ++i) copyStr(d.network[d.nNetworks++], sizeof d.network[0], nc.nets[i].ssid);
+  for (int i = 0; i < nc.count && d.nNetworks < 4; ++i) copyStr(d.network[d.nNetworks++], sizeof d.network[0], nc.ssid[i]);
+}
+
+// Wi-Fi page (settings > Wi-Fi): registered names, the scan, the join of the network saved last
+void fillWifi() {
+  ui::WifiPage& w = g_m->wifi;
+  net::Names nn;
+  net::names(&nn);
+  w.nSaved = 0;
+  for (int i = 0; i < nn.count && i < 8; ++i) copyStr(w.saved[w.nSaved++], sizeof w.saved[0], nn.ssid[i]);
+  static net::ScanView sv;  // ui task only (about 0.6 KB)
+  net::scanView(&sv);
+  w.scanning = sv.scanning;
+  w.scanOk = sv.ok;
+  w.nFound = 0;
+  for (int i = 0; i < sv.n && w.nFound < 16; ++i) {
+    ui::WifiFound& f = w.found[w.nFound++];
+    copyStr(f.ssid, sizeof f.ssid, sv.found[i].ssid);
+    f.rssi = sv.found[i].rssi;
+    f.locked = sv.found[i].locked;
+    f.saved = false;
+    for (int k = 0; k < nn.count; ++k) {
+      if (strcmp(nn.ssid[k], sv.found[i].ssid) == 0) f.saved = true;
+    }
+  }
+  net::Status ns;
+  net::status(&ns);
+  w.connected = ns.connected;
+  copyStr(w.ssid, sizeof w.ssid, ns.ssid);
+  copyStr(w.ip, sizeof w.ip, ns.ip);
+  uint8_t j = net::J_IDLE;
+  char js[33];
+  net::joinView(&j, js);
+  switch (j) {  // net::Join -> ui::WifiJoin
+    case net::J_TRYING: w.join = ui::WJ_TRYING; break;
+    case net::J_OK: w.join = ui::WJ_OK; break;
+    case net::J_NOT_FOUND: w.join = ui::WJ_NOT_FOUND; break;
+    case net::J_BAD_PASSWORD: w.join = ui::WJ_BAD_PASSWORD; break;
+    case net::J_FAILED: w.join = ui::WJ_FAILED; break;
+    default: w.join = ui::WJ_IDLE; break;
+  }
+  copyStr(w.joinSsid, sizeof w.joinSsid, js);
 }
 
 void fillSettings(const timing::View& tv) {
@@ -450,6 +491,12 @@ void apply(const ui::Action& a, bool touchOn) {
     case ui::ACT_SETTING: setSetting(a); break;
     case ui::ACT_RECORD_STOP: app::setRecording(false); break;
     case ui::ACT_RECORD_RESUME: app::setRecording(true); break;
+    case ui::ACT_WIFI_SCAN: net::requestScan(); break;
+    case ui::ACT_WIFI_SAVE:
+      // registered in NVS, first in the list, joined now (the page follows model.wifi.join)
+      if (!net::saveNetwork(a.ssid, a.pass)) Serial.printf("wifi: could not register %s\n", a.ssid);
+      break;
+    case ui::ACT_WIFI_FORGET: net::forgetNetwork(a.ssid); break;
     default: break;
   }
 }
@@ -592,7 +639,10 @@ void task(void*) {
       }
       wasDown = down;
     }
-    for (int i = 0; i < aq.n; ++i) apply(aq.a[i], touchOn);
+    for (int i = 0; i < aq.n; ++i) {
+      apply(aq.a[i], touchOn);
+      memset(aq.a[i].pass, 0, sizeof aq.a[i].pass);  // a typed password does not stay in memory
+    }
 
     // screen
     if (!run) {
@@ -658,6 +708,10 @@ void task(void*) {
     }
     if (g_m->screen == ui::SC_DATA) fillData(s, st.tzMin);
     if (g_m->screen == ui::SC_SETTINGS || g_m->screen == ui::SC_GATE) fillSettings(*tv);
+    if (g_m->screen == ui::SC_SETTINGS) fillData(s, st.tzMin);  // the Wi-Fi row shows the joined network
+    // the Wi-Fi page may switch the radio on (scan, join) also before the 30 s standstill
+    net::setSetup(g_m->screen == ui::SC_WIFI);
+    if (g_m->screen == ui::SC_WIFI) fillWifi();
     if (g_m->screen == ui::SC_GATE && !g_gateLoaded) {
       loadGateTrack();
       g_gateLoaded = true;

@@ -224,12 +224,16 @@ int pageIndex(uint8_t screen) {
   return -1;
 }
 
-void drawHeader(uint8_t screen, const char *aux) {
-  const PageStyle &st = pageStyle(screen);
+void drawHeaderBand(const PageStyle &st) {
   gfx::fillRect(0, 0, gfx::W, kHeaderH, st.tint);
   gfx::fillRect(0, kHeaderH, gfx::W, 2, st.color);
   gfx::Pt band[4] = { { 0, 0 }, { 18, 0 }, { 2, (float)kHeaderH }, { 0, (float)kHeaderH } };  // slanted colour band (10 px on average)
   gfx::fillPoly(band, 4, st.color);
+}
+
+void drawHeader(uint8_t screen, const char *aux) {
+  const PageStyle &st = pageStyle(screen);
+  drawHeaderBand(st);
   gfx::drawIcon(*st.icon2, 30, 14, gfx::blend(st.tint, st.color, 80));
   gfx::drawIcon(*st.icon, 30, 14, st.color);
   const float base = 32.0f + (float)FONT_JP30.capH * 0.5f;

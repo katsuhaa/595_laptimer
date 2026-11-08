@@ -4,6 +4,7 @@
 // Writes <out>/<scenario>.png for each scenario below and prints one PASS/FAIL line per check:
 //   - incremental drawing == full redraw (with and without the cached layer) after a drive sequence
 //   - touch scenario: swipes between the pages, end stops, vertical scroll, taps -> actions
+//   - Wi-Fi page: list, scan, keyboard (every printable ASCII character), join results, by taps
 //   - no missing glyphs, frame timings of the circuit screen (full and incremental)
 // Build (repository root): c++ -std=c++17 -O2 -Wall -Wextra -Wshadow -I. ui/*.cpp tools/host/render*.cpp -o /tmp/ui_render
 #include <math.h>
@@ -294,10 +295,13 @@ struct Touch {
     apply();
   }
   ActionQueue last;
+  std::vector<Action> all;  // every action since all.clear()
   void apply() {  // what the app does: page actions change the screen; then a frame is drawn
     last = q;
-    for (int i = 0; i < q.n; i++)
+    for (int i = 0; i < q.n; i++) {
+      all.push_back(q.a[i]);
       if (q.a[i].kind == ACT_PAGE) m->screen = q.a[i].arg;
+    }
     q.clear();
     Dirty d;
     frame(*m, g_now, &d);
@@ -437,6 +441,354 @@ static void touchTests() {
   const int sc2 = viewState().scroll;
   t.tap(300, 66 + 76 * 6 + 38 - sc2);  // 記録
   check(t.got(ACT_RECORD_STOP), "touch: tap 記録 while recording -> ACT_RECORD_STOP");
+}
+
+// ---------------------------------------------------------------- Wi-Fi page (settings > Wi-Fi)
+static void wifiSample(Model &m) {
+  WifiPage &w = m.wifi;
+  w = WifiPage();
+  static const char *const SAVED[3] = { "iPhone", "home-2G", "Aterm-5A2B3C-g" };
+  w.nSaved = 3;
+  for (int i = 0; i < 3; i++) copyStr(w.saved[i], sizeof w.saved[i], SAVED[i]);
+  w.connected = true;
+  copyStr(w.ssid, sizeof w.ssid, "iPhone");
+  copyStr(w.ip, sizeof w.ip, "172.20.10.3");
+  struct F {
+    const char *s;
+    int8_t rssi;
+    bool locked, saved;
+  } f[6] = { { "iPhone", -48, true, true },          { "Aterm-5A2B3C-g", -61, true, true }, { "鈴木のiPhone", -66, true, false },
+             { "Buffalo-G-1A2B", -72, true, false }, { "FREE_WiFi", -79, false, false },    { "サーキット_Guest", -86, false, false } };
+  w.nFound = 6;
+  for (int i = 0; i < 6; i++) {
+    copyStr(w.found[i].ssid, sizeof w.found[i].ssid, f[i].s);
+    w.found[i].rssi = f[i].rssi;
+    w.found[i].locked = f[i].locked;
+    w.found[i].saved = f[i].saved;
+  }
+  w.scanOk = true;
+}
+static void tapKey(Touch &t, uint32_t code) {
+  int16_t x, y;
+  if (testWifiKey(viewState().wifiLayer, code, &x, &y)) t.tap(x, y);
+  else check(false, "wifi: control key not found");
+}
+// taps the keys of s on the keyboard, switching layers on the way; false if a character has no key
+static bool typeKeys(Touch &t, const char *s) {
+  for (; *s; s++) {
+    const uint32_t c = (uint8_t)*s;
+    int16_t x, y;
+    int layer = viewState().wifiLayer, target = -1;
+    for (int l = 0; l < 3 && target < 0; l++) {
+      const int k = (layer + l) % 3;  // the current layer first
+      if (testWifiKey((uint8_t)k, c, &x, &y)) target = k;
+    }
+    if (target < 0) return false;
+    if ((target == 2) != (layer == 2)) {  // letters <-> symbols
+      tapKey(t, TK_LAYER);
+      layer = viewState().wifiLayer;
+    }
+    if (target != layer) {  // lower <-> upper
+      tapKey(t, TK_SHIFT);
+      layer = viewState().wifiLayer;
+    }
+    if (layer != target || !testWifiKey((uint8_t)layer, c, &x, &y)) return false;
+    t.tap(x, y);
+  }
+  return true;
+}
+static void backspaces(Touch &t, int n) {
+  for (int i = 0; i < n; i++) tapKey(t, TK_BACK);
+}
+static int countKind(const std::vector<Action> &v, uint8_t kind) {
+  int n = 0;
+  for (const Action &a : v) n += a.kind == kind;
+  return n;
+}
+static const Action *lastKind(const std::vector<Action> &v, uint8_t kind) {
+  for (size_t i = v.size(); i-- > 0;)
+    if (v[i].kind == kind) return &v[i];
+  return nullptr;
+}
+static std::vector<uint16_t> band() {  // rows 0..66: the header band (on the keyboard: the text field)
+  return std::vector<uint16_t>(g_fb, g_fb + kWidth * 66);
+}
+static bool screenIs(const std::vector<uint16_t> &a) {
+  return memcmp(a.data(), g_fb, sizeof g_fb) == 0;
+}
+
+static void wifiTests() {
+  Model &m = g_m;
+  baseModel(m);
+  wifiSample(m);
+  m.touchEnabled = true;
+  Touch t;
+  t.m = &m;
+  Dirty d;
+  char det[160];
+  // settings: the Wi-Fi row (last but one) opens the page
+  m.screen = SC_SETTINGS;
+  frame(m, g_now, &d);
+  t.swipe(300, 400, 300, 60);
+  t.swipe(300, 400, 300, 60);
+  shot("page_settings_wifi_row", m);
+  t.tap(300, 66 + 76 * 7 + 38 - viewState().scroll);
+  const Action *a = t.find(ACT_PAGE);
+  check(a && a->arg == SC_WIFI && m.screen == SC_WIFI && viewState().wifiView == 0, "wifi: settings Wi-Fi row -> ACT_PAGE(SC_WIFI), list view");
+  shot("wifi_list_connected", m);
+  sameAsFull(m, "wifi_list_connected: incremental == full");
+  t.swipe(500, 220, 380, 226);
+  const bool noLeft = m.screen == SC_WIFI && t.last.n == 0;
+  t.swipe(200, 220, 330, 214);
+  check(noLeft && m.screen == SC_WIFI && t.last.n == 0 && viewState().wifiDialog == 0, "wifi: no page swipe on SC_WIFI (left, right)");
+  m.touchEnabled = false;
+  t.tap(300, 66 + 92 + 38);  // first network: would open the dialog
+  t.tap(60, 32);             // ‹ 設定
+  check(t.last.n == 0 && viewState().wifiDialog == 0 && m.screen == SC_WIFI, "wifi: taps ignored while touch is disabled");
+  m.touchEnabled = true;
+  // delete dialog
+  t.tap(300, 66 + 92 + 76 + 38);  // home-2G
+  check(viewState().wifiDialog == 1, "wifi: tap a registered network opens the delete dialog");
+  shot("wifi_forget_dialog", m);
+  sameAsFull(m, "wifi_forget_dialog: incremental == full");
+  t.swipe(300, 300, 300, 120);
+  check(viewState().scroll == 0 && viewState().wifiDialog == 1, "wifi: no scroll while the dialog is open");
+  t.all.clear();
+  t.tap(425, 356);  // キャンセル
+  check(viewState().wifiDialog == 0 && t.all.empty(), "wifi: キャンセル closes the delete dialog without an action");
+  t.tap(300, 66 + 92 + 76 + 38);
+  t.tap(175, 356);  // 削除
+  a = lastKind(t.all, ACT_WIFI_FORGET);
+  check(a && strcmp(a->ssid, "home-2G") == 0 && countKind(t.all, ACT_WIFI_FORGET) == 1 && viewState().wifiDialog == 0, "wifi: 削除 -> ACT_WIFI_FORGET(home-2G)");
+  sameAsFull(m, "wifi list after the dialog: incremental == full");
+  // empty list, full list (8: adding disabled, scrolls)
+  m.wifi.nSaved = 0;
+  m.wifi.connected = false;
+  m.wifi.ssid[0] = m.wifi.ip[0] = 0;
+  shot("wifi_list_empty", m);
+  sameAsFull(m, "wifi_list_empty: incremental == full");
+  static const char *const MORE[8] = { "iPhone", "home-2G", "Aterm-5A2B3C-g", "Buffalo-G-1A2B", "鈴木のiPhone", "office_5F", "サーキット_Guest", "car-hotspot" };
+  m.wifi.nSaved = 8;
+  for (int i = 0; i < 8; i++) copyStr(m.wifi.saved[i], sizeof m.wifi.saved[i], MORE[i]);
+  m.wifi.connected = true;
+  copyStr(m.wifi.ssid, sizeof m.wifi.ssid, "office_5F");
+  copyStr(m.wifi.ip, sizeof m.wifi.ip, "192.168.10.24");
+  frame(m, g_now, &d);
+  t.swipe(300, 400, 300, 100);
+  t.swipe(300, 400, 300, 100);
+  const int sMax = 92 + 8 * 76 + 76 - 384;
+  check(viewState().scroll == sMax, "wifi: the list scrolls (8 networks)");
+  shot("wifi_list_full", m);
+  sameAsFull(m, "wifi_list_full: incremental == full");
+  t.all.clear();
+  t.tap(300, 450 - 38);  // ＋ ネットワークを追加 (disabled: 8 件まで)
+  check(t.all.empty() && viewState().wifiView == 0, "wifi: 8 networks: adding is disabled");
+  wifiSample(m);
+  frame(m, g_now, &d);
+  // scan
+  m.wifi.scanOk = false;
+  t.swipe(300, 120, 300, 420);  // back to the top
+  t.tap(300, 66 + 92 + 3 * 76 + 20);  // ＋ ネットワークを追加
+  check(t.got(ACT_WIFI_SCAN) && viewState().wifiView == 1, "wifi: ＋ ネットワークを追加 -> ACT_WIFI_SCAN, scan view");
+  m.wifi.scanning = true;
+  shot("wifi_scan_searching", m);
+  sameAsFull(m, "wifi_scan_searching: incremental == full");
+  t.tap(518, 32);
+  check(!t.got(ACT_WIFI_SCAN), "wifi: 再検索 does nothing while searching");
+  m.wifi.scanning = false;
+  m.wifi.scanOk = true;
+  shot("wifi_scan_results", m);
+  sameAsFull(m, "wifi_scan_results: incremental == full");
+  t.tap(518, 32);
+  check(t.got(ACT_WIFI_SCAN) && viewState().wifiView == 1, "wifi: 再検索 -> ACT_WIFI_SCAN");
+  // open network: confirm dialog -> ACT_WIFI_SAVE(ssid, "")
+  t.tap(300, 384);  // FREE_WiFi (row 5, partly above the hint)
+  check(viewState().wifiDialog == 2, "wifi: tap an open network opens the confirm dialog");
+  shot("wifi_open_dialog", m);
+  sameAsFull(m, "wifi_open_dialog: incremental == full");
+  t.all.clear();
+  t.tap(175, 356);  // 登録する
+  a = lastKind(t.all, ACT_WIFI_SAVE);
+  check(a && countKind(t.all, ACT_WIFI_SAVE) == 1 && strcmp(a->ssid, "FREE_WiFi") == 0 && a->pass[0] == 0 && viewState().wifiView == 3,
+        "wifi: 登録する -> one ACT_WIFI_SAVE(FREE_WiFi, \"\"), result view");
+  m.wifi.join = WJ_FAILED;
+  copyStr(m.wifi.joinSsid, sizeof m.wifi.joinSsid, "FREE_WiFi");
+  shot("wifi_result_failed_open", m);
+  sameAsFull(m, "wifi_result_failed_open: incremental == full");
+  t.tap(300, 398);  // OK (no 入力しなおす for an open network)
+  check(viewState().wifiView == 0, "wifi: open network failed: OK -> list");
+  // locked network: keyboard
+  m.wifi.join = WJ_IDLE;
+  m.wifi.joinSsid[0] = 0;
+  t.tap(300, 66 + 92 + 3 * 76 + 20);
+  t.tap(300, 66 + 2 * 76 + 38);  // 鈴木のiPhone
+  check(viewState().wifiView == 2 && viewState().wifiLayer == 0 && !viewState().wifiHidden, "wifi: tap a locked network opens the keyboard (lower case, text shown)");
+  shot("wifi_keys_lower", m);
+  sameAsFull(m, "wifi_keys_lower: incremental == full");
+  tapKey(t, TK_SHIFT);
+  check(viewState().wifiLayer == 1, "wifi: ⇧ -> upper case");
+  shot("wifi_keys_upper", m);
+  sameAsFull(m, "wifi_keys_upper: incremental == full");
+  tapKey(t, TK_LAYER);
+  check(viewState().wifiLayer == 2, "wifi: #+= -> symbols");
+  shot("wifi_keys_symbols", m);
+  sameAsFull(m, "wifi_keys_symbols: incremental == full");
+  tapKey(t, TK_LAYER);
+  const bool backUpper = viewState().wifiLayer == 1;
+  tapKey(t, TK_SHIFT);
+  check(backUpper && viewState().wifiLayer == 0, "wifi: ABC -> upper again (⇧ stays), ⇧ -> lower");
+  t.all.clear();
+  bool typed = typeKeys(t, "abc1234");
+  tapKey(t, TK_OK);
+  check(typed && t.all.empty() && viewState().wifiView == 2, "wifi: 保存して接続 with 7 characters does nothing");
+  typed = typeKeys(t, "5");
+  shot("wifi_keys_typed_visible", m);
+  sameAsFull(m, "wifi_keys_typed_visible: incremental == full");
+  tapKey(t, TK_SHOW);
+  check(viewState().wifiHidden, "wifi: 隠す hides the text");
+  shot("wifi_keys_typed_hidden", m);
+  sameAsFull(m, "wifi_keys_typed_hidden: incremental == full");
+  tapKey(t, TK_SHOW);
+  t.all.clear();
+  tapKey(t, TK_OK);
+  a = lastKind(t.all, ACT_WIFI_SAVE);
+  check(typed && a && countKind(t.all, ACT_WIFI_SAVE) == 1 && t.all.size() == 1 && strcmp(a->ssid, "鈴木のiPhone") == 0 && strcmp(a->pass, "abc12345") == 0 && viewState().wifiView == 3,
+        "wifi: abc12345 typed key by key, 保存して接続 -> exactly one ACT_WIFI_SAVE(鈴木のiPhone, abc12345)");
+  // join results: IDLE (the app has not moved yet) looks like TRYING
+  m.wifi.join = WJ_IDLE;
+  frame(m, g_now, &d);
+  const std::vector<uint16_t> idle(g_fb, g_fb + kWidth * kHeight);
+  m.wifi.join = WJ_TRYING;
+  copyStr(m.wifi.joinSsid, sizeof m.wifi.joinSsid, "鈴木のiPhone");
+  shot("wifi_result_trying", m);
+  check(screenIs(idle), "wifi: WJ_IDLE after the save shows 接続中… like WJ_TRYING");
+  sameAsFull(m, "wifi_result_trying: incremental == full");
+  m.wifi.join = WJ_OK;
+  copyStr(m.wifi.joinSsid, sizeof m.wifi.joinSsid, "home-2G");  // a result for another network: still trying
+  frame(m, g_now, &d);
+  check(screenIs(idle), "wifi: a result for another network still shows 接続中…");
+  copyStr(m.wifi.joinSsid, sizeof m.wifi.joinSsid, "鈴木のiPhone");
+  m.wifi.join = WJ_BAD_PASSWORD;
+  shot("wifi_result_bad_password", m);
+  sameAsFull(m, "wifi_result_bad_password: incremental == full");
+  t.tap(154, 398);  // 入力しなおす
+  check(viewState().wifiView == 2, "wifi: 入力しなおす -> keyboard");
+  sameAsFull(m, "wifi keyboard (入力しなおす): incremental == full");
+  t.all.clear();
+  tapKey(t, TK_OK);  // the previous text is back
+  a = lastKind(t.all, ACT_WIFI_SAVE);
+  check(a && strcmp(a->pass, "abc12345") == 0 && viewState().wifiView == 3, "wifi: 入力しなおす keeps the previous text (ACT_WIFI_SAVE abc12345 again)");
+  m.wifi.join = WJ_FAILED;
+  shot("wifi_result_failed", m);
+  sameAsFull(m, "wifi_result_failed: incremental == full");
+  m.wifi.join = WJ_NOT_FOUND;
+  shot("wifi_result_not_found", m);
+  sameAsFull(m, "wifi_result_not_found: incremental == full");
+  m.wifi.join = WJ_OK;
+  copyStr(m.wifi.ssid, sizeof m.wifi.ssid, "鈴木のiPhone");
+  copyStr(m.wifi.ip, sizeof m.wifi.ip, "192.168.1.23");
+  shot("wifi_result_ok", m);
+  sameAsFull(m, "wifi_result_ok: incremental == full");
+  t.tap(300, 398);  // OK
+  check(viewState().wifiView == 0, "wifi: 接続しました: OK -> list");
+  wifiSample(m);
+  // hidden text: only dots, the same pixels for any 8 characters
+  t.tap(300, 66 + 92 + 3 * 76 + 20);
+  t.tap(300, 66 + 3 * 76 + 38);  // Buffalo-G-1A2B
+  t.all.clear();
+  tapKey(t, TK_OK);  // the keyboard starts empty (nothing kept from before)
+  const bool empty = t.all.empty() && viewState().wifiView == 2;
+  tapKey(t, TK_SHOW);
+  typed = typeKeys(t, "abc12345");
+  const std::vector<uint16_t> hidA = band();
+  backspaces(t, 8);
+  typed = typeKeys(t, "Zq#9 ~|x") && typed;
+  const std::vector<uint16_t> hidB = band();
+  tapKey(t, TK_SHOW);
+  const std::vector<uint16_t> shown = band();
+  check(empty && typed && hidA == hidB && hidA != shown, "wifi: hidden text is drawn as dots only (same pixels for abc12345 and Zq#9 ~|x)");
+  // all 95 printable ASCII characters through the layers (a password holds at most 64: two passwords)
+  backspaces(t, 8);
+  std::string all1, all2;
+  for (int c = 0x20; c < 0x50; c++) all1 += (char)c;
+  for (int c = 0x50; c < 0x7F; c++) all2 += (char)c;
+  t.all.clear();
+  bool typedAll = typeKeys(t, all1.c_str());
+  shot("wifi_keys_long", m);
+  sameAsFull(m, "wifi_keys_long: incremental == full");
+  tapKey(t, TK_OK);
+  const Action *a1 = lastKind(t.all, ACT_WIFI_SAVE);
+  const bool ok1 = a1 && all1 == a1->pass;
+  m.wifi.join = WJ_BAD_PASSWORD;
+  copyStr(m.wifi.joinSsid, sizeof m.wifi.joinSsid, "Buffalo-G-1A2B");
+  frame(m, g_now, &d);
+  t.tap(154, 398);  // 入力しなおす
+  backspaces(t, (int)all1.size());
+  t.all.clear();
+  typedAll = typeKeys(t, all2.c_str()) && typedAll;
+  tapKey(t, TK_OK);
+  const Action *a2 = lastKind(t.all, ACT_WIFI_SAVE);
+  const bool ok2 = a2 && all2 == a2->pass;
+  snprintf(det, sizeof det, "0x20..0x4F %s, 0x50..0x7E %s", ok1 ? "ok" : "differs", ok2 ? "ok" : "differs");
+  check(typedAll && ok1 && ok2, "wifi: all 95 printable ASCII characters typed through the layers (two passwords)", det);
+  // 64 characters: only hex digits are valid
+  t.tap(154, 398);
+  backspaces(t, (int)all2.size());
+  std::string hex64, bad64(63, 'a');
+  for (int i = 0; i < 4; i++) hex64 += "0123456789abcdef";
+  bad64 += 'g';
+  t.all.clear();
+  typed = typeKeys(t, bad64.c_str());
+  tapKey(t, TK_OK);
+  const bool badNone = t.all.empty();
+  backspaces(t, 64);
+  typed = typeKeys(t, hex64.c_str()) && typed;
+  tapKey(t, TK_OK);
+  a = lastKind(t.all, ACT_WIFI_SAVE);
+  check(typed && badNone && a && hex64 == a->pass, "wifi: 64 characters: hex digits saved, other 64 not");
+  // manual name, then its password
+  m.wifi.join = WJ_OK;
+  copyStr(m.wifi.joinSsid, sizeof m.wifi.joinSsid, "Buffalo-G-1A2B");
+  frame(m, g_now, &d);
+  t.tap(300, 398);  // OK -> list
+  t.tap(300, 66 + 92 + 3 * 76 + 20);
+  t.swipe(300, 380, 300, 80);
+  t.swipe(300, 380, 300, 80);
+  check(viewState().scroll == 7 * 76 - (398 - 66), "wifi: the scan list scrolls");
+  t.tap(300, 66 + 6 * 76 + 38 - viewState().scroll);  // 名前を入力
+  t.all.clear();
+  typed = typeKeys(t, "MyNet 5G");
+  shot("wifi_keys_name", m);
+  sameAsFull(m, "wifi_keys_name: incremental == full");
+  tapKey(t, TK_OK);  // 次へ
+  const bool toPass = t.all.empty() && viewState().wifiView == 2;
+  typed = typeKeys(t, "password1") && typed;
+  tapKey(t, TK_OK);
+  a = lastKind(t.all, ACT_WIFI_SAVE);
+  check(typed && toPass && a && countKind(t.all, ACT_WIFI_SAVE) == 1 && strcmp(a->ssid, "MyNet 5G") == 0 && strcmp(a->pass, "password1") == 0,
+        "wifi: 名前を入力: MyNet 5G, 次へ, password1 -> ACT_WIFI_SAVE(MyNet 5G, password1)");
+  // キャンセル, ‹ 戻る, ‹ 設定; leaving the page resets it
+  m.wifi.join = WJ_NOT_FOUND;
+  copyStr(m.wifi.joinSsid, sizeof m.wifi.joinSsid, "MyNet 5G");
+  frame(m, g_now, &d);
+  t.tap(300, 398);  // OK -> list
+  t.tap(300, 66 + 92 + 3 * 76 + 20);
+  t.tap(300, 66 + 38);  // iPhone (registered: a new password)
+  typeKeys(t, "secret99");
+  tapKey(t, TK_CANCEL);
+  const bool cancelled = viewState().wifiView == 1;
+  t.tap(300, 66 + 38);
+  t.all.clear();
+  tapKey(t, TK_OK);
+  const bool wiped = t.all.empty();
+  tapKey(t, TK_CANCEL);
+  t.tap(60, 32);  // ‹ 戻る
+  const bool backList = viewState().wifiView == 0;
+  t.tap(60, 32);  // ‹ 設定
+  check(cancelled && wiped && backList && m.screen == SC_SETTINGS, "wifi: キャンセル -> scan (text gone), ‹ 戻る -> list, ‹ 設定 -> settings");
+  m.screen = SC_WIFI;
+  frame(m, g_now, &d);
+  check(viewState().wifiView == 0 && viewState().wifiDialog == 0, "wifi: the page starts at the list again");
 }
 
 // ---------------------------------------------------------------- timings
@@ -717,6 +1069,10 @@ int main(int argc, char **argv) {
   m.data.wifiOk = false;
   m.data.ip[0] = 0;
   shot("page_data_offline", m);
+  m.data.nNetworks = 0;
+  shot("page_data_offline_unregistered", m);
+  sameAsFull(m, "page_data_offline_unregistered: incremental == full");
+  m.data.nNetworks = 2;
   m.data.wifiOk = true;
   copyStr(m.data.ip, sizeof m.data.ip, "172.20.10.3");
   m.screen = SC_SETTINGS;
@@ -736,8 +1092,9 @@ int main(int argc, char **argv) {
     sameAsFull(m, "page_gate: incremental == full");
   }
 
-  // ---- touch, glyphs, timings
+  // ---- touch, Wi-Fi page, glyphs, timings
   touchTests();
+  wifiTests();
   {
     char det[64];
     snprintf(det, sizeof det, "%u missing", (unsigned)missingGlyphs());
