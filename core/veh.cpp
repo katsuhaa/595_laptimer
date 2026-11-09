@@ -59,6 +59,28 @@ void VehDecoder::onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, con
       }
       g_.lightLastB0 = d[VEH_LIGHT_BYTE];
       g_.lightSeenMs = stamp(now);
+    } else if (id == VEH_ID_ODO && dlc >= 4) {  // b1 low 4 bits + b2 + b3 = km
+      const uint32_t km = (static_cast<uint32_t>(d[1] & 0x0F) << 16) |
+                          (static_cast<uint32_t>(d[2]) << 8) | d[3];
+      if (!g_.odoHave || (km >= g_.odoKm && km - g_.odoKm <= ODO_MAX_JUMP_KM)) {
+        g_.odoKm = km;
+        g_.odoHave = true;
+        g_.odoMs = stamp(now);
+        g_.odoCandN = 0;
+      } else {
+        g_.odoRejected++;
+        if (g_.odoCandN && km == g_.odoCand) {
+          g_.odoCandN++;
+        } else {
+          g_.odoCand = km;
+          g_.odoCandN = 1;
+        }
+        if (g_.odoCandN >= ODO_ACCEPT_REPEAT) {
+          g_.odoKm = km;
+          g_.odoMs = stamp(now);
+          g_.odoCandN = 0;
+        }
+      }
     }
     return;
   }
@@ -190,6 +212,13 @@ void VehDecoder::lightInfo(LightInfo* out, uint32_t now) {
   out->lastB0 = g_.lightLastB0;
   out->firstMs = g_.lightFirstMs;
   out->changes = g_.lightChanges;
+}
+
+void VehDecoder::odoInfo(OdoInfo* out, uint32_t now) const {
+  out->have = g_.odoHave;
+  out->seen = g_.odoHave && within(g_.odoMs, now, ODO_STALE_MS);
+  out->km = g_.odoKm;
+  out->rejected = g_.odoRejected;
 }
 
 void vehFromSignals(const MlSignals& s, VehValues* out) {

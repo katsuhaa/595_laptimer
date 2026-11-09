@@ -1,4 +1,5 @@
-// ui/scr_pages.cpp - boot self-test (§3) and the stopped pages: laps, maintenance, data, settings, gate, Wi-Fi (§7)
+// ui/scr_pages.cpp - boot self-test (§3) and the stopped pages: laps, maintenance, data, settings, gate, Wi-Fi (§7),
+// 走行記録 (odometer log, round gauge 2.15.x)
 // Each page is drawn as a header and a body; a part is redrawn (inside its clip) when its key changes.
 #include <math.h>
 #include <stdio.h>
@@ -339,7 +340,7 @@ static void dataBody() {
 }
 
 // ================================================================ settings
-enum SettingsRow { SR_COURSE = 0, SR_GATE, SR_SHIFT, SR_BRIGHT, SR_OIL, SR_RC, SR_REC, SR_WIFI, SR_INFO, SR_COUNT };
+enum SettingsRow { SR_ODO = 0, SR_COURSE, SR_GATE, SR_SHIFT, SR_BRIGHT, SR_OIL, SR_RC, SR_REC, SR_WIFI, SR_INFO, SR_COUNT };
 static int editorH(const Model &m) {
   switch (g.editor) {
     case SR_SHIFT: return 156;
@@ -423,7 +424,7 @@ static void drawEditor(const Model &m, float top) {
 static void settingsBody() {
   const Model &m = *s_m;
   const SettingsPage &s = m.settings;
-  static const char *const NAMES[SR_COUNT] = { "コース", "ゲート設定", "シフトポイント", "明るさ", "油温の向き", "RaceChrono", "記録", "Wi-Fi", "機器情報" };
+  static const char *const NAMES[SR_COUNT] = { "走行記録", "コース", "ゲート設定", "シフトポイント", "明るさ", "油温の向き", "RaceChrono", "記録", "Wi-Fi", "機器情報" };
   char b[96];
   for (int i = 0; i < SR_COUNT; i++) {
     const int y = kBodyY + setTop(m, i) - g.scroll;
@@ -431,10 +432,18 @@ static void settingsBody() {
     if (y + h <= kBodyY || y >= gfx::H) continue;
     const float cy = (float)y + kRowH * 0.5f;
     mixDraw(T28, 20, baseC(FONT_JP28, cy), NAMES[i], C_WHITE);
-    const bool tappable = i <= SR_REC || i == SR_WIFI;
+    const bool tappable = i <= SR_REC || i == SR_WIFI;  // SR_ODO is first
     if (tappable) gfx::drawText(FONT_CP28, 568, baseC(FONT_CP28, cy), "›", C_LABEL);
     const float xr = tappable ? 556 : 580;
     switch (i) {
+      case SR_ODO: {  // the odometer now (round gauge 2.15.0: 「走行記録」(今の ODO))
+        char o[16];
+        fmtGrouped(o, sizeof o, m.odo.cur);
+        if (m.odo.curOk) snprintf(b, sizeof b, "ODO %s km", o);
+        else snprintf(b, sizeof b, "ODO 受信待ち");
+        valueBadge(xr, cy, b);
+        break;
+      }
       case SR_COURSE: valueBadge(xr, cy, courseLabel(m, b, sizeof b)); break;
       case SR_GATE: {
         size_t u = 0;
@@ -547,10 +556,11 @@ static void settingsTap(const Model &m, int x, int y, ActionQueue &out) {
         }
         break;
       }
+      case SR_ODO:
       case SR_GATE:
       case SR_WIFI:
         a.kind = ACT_PAGE;
-        a.arg = i == SR_GATE ? SC_GATE : SC_WIFI;
+        a.arg = i == SR_ODO ? SC_ODO : (i == SR_GATE ? SC_GATE : SC_WIFI);
         out.push(a);
         break;
       case SR_OIL:
@@ -1383,6 +1393,157 @@ static void wifiTap(const Model &m, int x, int y, ActionQueue &out) {
   }
 }
 
+// ================================================================ 走行記録 (settings > 走行記録)
+// Round gauge 2.15.0-2.15.3 (ui.cpp updOdo): one period at a time: the period, the odometer at its end (now for
+// the current one) large, start 〜 end, the distance and ▲ the over-rpm time. 600x450 and touch only: the levels
+// are tabs (1 年 … 1 日; a finer tab = the last period inside the one shown, a coarser tab = the one that holds
+// it), back / forward are buttons and swipes (finger to the right = earlier). Before the date is known:
+// 時刻 待ち with the odometer now and the distance since power-up.
+static const float OD_TAB_X = 16, OD_TAB_Y = 78, OD_TAB_W = 108, OD_TAB_H = 52, OD_TAB_GAP = 6;
+static const float OD_BTN_Y = 378, OD_BTN_H = 64, OD_BTN_W = 200, OD_BTN_PREV_X = 16, OD_BTN_NEXT_X = 384;
+static const char *const OD_NAME[OL_COUNT] = { "1 年", "3 ヶ月", "1 ヶ月", "1 週", "1 日" };
+static const char *const OD_NOW[OL_COUNT] = { "今年", "", "今月", "今週", "今日" };
+static const char *const OD_WDAY[7] = { "日", "月", "火", "水", "木", "金", "土" };
+static float odTabX(int i) {
+  return OD_TAB_X + (float)i * (OD_TAB_W + OD_TAB_GAP);
+}
+static void odoPeriodText(const OdoPage &o, char *out, size_t n) {
+  const OdoDate &a = o.first, &b = o.last;
+  const char *now = o.current ? OD_NOW[o.level < OL_COUNT ? o.level : 0] : "";
+  const char *sp = now[0] ? "  " : "";
+  switch (o.level) {
+    case OL_YEAR: snprintf(out, n, "%u 年%s%s", (unsigned)a.y, sp, now); break;
+    case OL_QUARTER: snprintf(out, n, "%u 年 %u〜%u 月", (unsigned)a.y, (unsigned)a.m, (unsigned)b.m); break;
+    case OL_MONTH: snprintf(out, n, "%u 年 %u 月%s%s", (unsigned)a.y, (unsigned)a.m, sp, now); break;
+    case OL_WEEK: snprintf(out, n, "%u/%u〜%u/%u%s%s", (unsigned)a.m, (unsigned)a.d, (unsigned)b.m, (unsigned)b.d, sp, now); break;
+    default:
+      snprintf(out, n, "%u/%u/%u（%s）%s%s", (unsigned)a.y, (unsigned)a.m, (unsigned)a.d, OD_WDAY[a.wday % 7], sp, now);
+      break;
+  }
+}
+static void fmtHms(char *o, size_t n, uint32_t s) {  // h:mm:ss
+  if (s > 359999u) s = 359999u;
+  snprintf(o, n, "%u:%02u:%02u", (unsigned)(s / 3600u), (unsigned)(s / 60u % 60u), (unsigned)(s % 60u));
+}
+static void odoBigValue(float base, const char *num) {  // centred: number (64 px) + " km"
+  const float wn = gfx::textWidth(FONT_NUM64, num), wu = mixWidth(T28, "km");
+  const float x = 300 - (wn + 10 + wu) * 0.5f;
+  gfx::drawText(FONT_NUM64, x, base, num, C_WHITE);
+  mixDraw(T28, x + wn + 10, base, "km", C_LABEL);
+}
+static void odoHeader() {
+  const Model &m = *s_m;
+  const PageStyle &st = pageStyle(SC_ODO);
+  drawHeaderBand(st);
+  const float cy = 32;
+  float x = mixDraw(T22, 30, baseC(FONT_JP22, cy), "‹ 設定", C_YELLOW);
+  mixDraw(T30, x + 22, baseC(FONT_JP30, cy), "走行記録", st.color);
+  char t[48], n[16];
+  if (!m.odo.storageOk) {
+    mixDrawR(T18, 584, baseC(FONT_JP18, cy), "保存領域なし", C_RED);
+  } else {
+    fmtGrouped(n, sizeof n, m.odo.records);
+    snprintf(t, sizeof t, "記録 %s 件", n);
+    mixDrawR(T18, 584, baseC(FONT_JP18, cy), t, C_LABEL);
+  }
+}
+static void odoBody() {
+  const OdoPage &o = s_m->odo;
+  char t[64], a[16], b[16];
+  // level tabs: the shown one yellow; without a date only the shown one is lit
+  for (int i = 0; i < OL_COUNT; i++) {
+    const bool cur = i == o.level, can = o.dateOk;
+    const uint16_t border = cur ? C_YELLOW : (can ? C_LABEL : C_OFF);
+    const uint16_t fg = cur ? C_YELLOW : (can ? C_WHITE : C_DOT);
+    button(odTabX(i), OD_TAB_Y, OD_TAB_W, OD_TAB_H, T22, OD_NAME[i], border, C_BG, fg);
+  }
+  if (!o.dateOk) {  // the date is not known yet (GNSS / RTC): no period; the odometer now and since power-up
+    mixDrawC(T30, 300, baseC(FONT_JP30, 176), "時刻 待ち", C_SUB);
+    if (o.curOk) {
+      fmtGrouped(a, sizeof a, o.cur);
+      odoBigValue(262, a);
+      snprintf(t, sizeof t, "起動から %u km", (unsigned)o.sinceBootKm);
+      mixDrawC(T26, 300, baseC(FONT_JP26, 310), t, C_LABEL);
+    } else {
+      mixDrawC(T28, 300, baseC(FONT_JP28, 250), "ODO 受信待ち", C_LABEL);
+    }
+  } else {
+    odoPeriodText(o, t, sizeof t);
+    mixDrawC(T30, 300, baseC(FONT_JP30, 166), t, C_SUB);
+    if (!o.odoKnown) {
+      mixDrawC(T30, 300, baseC(FONT_JP30, 262), "記録なし", C_LABEL);
+    } else {
+      fmtGrouped(a, sizeof a, o.odoEnd);
+      odoBigValue(252, a);  // the odometer at the end of the period (now for the current one)
+      fmtGrouped(a, sizeof a, o.odoStart);
+      fmtGrouped(b, sizeof b, o.odoEnd);
+      snprintf(t, sizeof t, "%s 〜 %s", a, b);
+      mixDrawC(T26, 300, baseC(FONT_JP26, 286), t, C_LABEL);
+      // distance | ▲ over-rpm time (two columns)
+      mixDrawC(T18, 150, baseC(FONT_JP18, 312), "距離", C_LABEL);
+      mixDrawC(T18, 450, baseC(FONT_JP18, 312), "過走行（3000 rpm 以上）", C_LABEL);
+      fmtGrouped(a, sizeof a, o.km);
+      const float wn = gfx::textWidth(FONT_NUM48, a), wu = mixWidth(T22, "km");
+      float x = 150 - (wn + 8 + wu) * 0.5f;
+      gfx::drawText(FONT_NUM48, x, 362, a, C_WHITE);
+      mixDraw(T22, x + wn + 8, 362, "km", C_LABEL);
+      fmtHms(b, sizeof b, o.aboveS);
+      const float wt = gfx::textWidth(FONT_NUM48, b);
+      x = 450 - (wt + 30) * 0.5f;
+      gfx::Pt tri[3] = { { x + 11, 340 }, { x + 22, 360 }, { x, 360 } };  // ▲ in the over-rpm colour
+      gfx::fillPoly(tri, 3, C_YELLOW);
+      gfx::drawText(FONT_NUM48, x + 30, 362, b, C_YELLOW);
+      gfx::fillRect(299, 306, 2, 60, C_OFF);
+    }
+  }
+  const bool back = o.dateOk && o.canBack, fwd = o.dateOk && o.canFwd;
+  button(OD_BTN_PREV_X, OD_BTN_Y, OD_BTN_W, OD_BTN_H, T26, "‹ 前", back ? C_LABEL : C_OFF, C_BG, back ? C_WHITE : C_DOT);
+  button(OD_BTN_NEXT_X, OD_BTN_Y, OD_BTN_W, OD_BTN_H, T26, "次 ›", fwd ? C_LABEL : C_OFF, C_BG, fwd ? C_WHITE : C_DOT);
+}
+static void odoFrame(const Model &m, bool full) {
+  const uint32_t kh = hashU(hashU(kHash0, m.odo.storageOk), m.odo.records);
+  const uint32_t kb = hashBytes(kHash0, &m.odo, sizeof m.odo);
+  if (full || kh != s_keyHead) redraw(rectXY(0, 0, gfx::W, kBodyY), odoHeader);
+  if (full || kb != s_keyBody) redraw(rectXY(0, kBodyY, gfx::W, gfx::H), odoBody);
+  s_keyHead = kh;
+  s_keyBody = kb;
+}
+static void odoMove(uint8_t mv, uint8_t level, ActionQueue &out) {
+  Action a;
+  a.kind = ACT_ODO;
+  a.arg = mv;
+  a.value = level;
+  out.push(a);
+}
+static void odoTap(const Model &m, int x, int y, ActionQueue &out) {
+  const OdoPage &o = m.odo;
+  if (y < kBodyY) {
+    if (x < 150) {
+      Action a;
+      a.kind = ACT_PAGE;
+      a.arg = SC_SETTINGS;
+      out.push(a);
+    }
+    return;
+  }
+  for (int i = 0; i < OL_COUNT; i++)
+    if (inBox(x, y, odTabX(i), OD_TAB_Y, OD_TAB_W, OD_TAB_H)) {
+      if (o.dateOk && i != o.level) odoMove(OM_LEVEL, (uint8_t)i, out);
+      return;
+    }
+  if (inBox(x, y, OD_BTN_PREV_X, OD_BTN_Y, OD_BTN_W, OD_BTN_H)) {
+    if (o.dateOk && o.canBack) odoMove(OM_PREV, 0, out);
+  } else if (inBox(x, y, OD_BTN_NEXT_X, OD_BTN_Y, OD_BTN_W, OD_BTN_H)) {
+    if (o.dateOk && o.canFwd) odoMove(OM_NEXT, 0, out);
+  }
+}
+void odoSwipe(const Model &m, int dx, ActionQueue &out) {  // finger to the right = earlier period
+  const OdoPage &o = m.odo;
+  if (!o.dateOk) return;
+  if (dx > 0 && o.canBack) odoMove(OM_PREV, 0, out);
+  else if (dx < 0 && o.canFwd) odoMove(OM_NEXT, 0, out);
+}
+
 // ================================================================ dispatch
 static void bodyKeyLaps(uint32_t &h, const Model &m) {
   h = hashBytes(h, m.laps.lap, sizeof(LapRow) * m.laps.n);
@@ -1422,6 +1583,10 @@ void pagesFrame(const Model &m, bool full) {
   s_sc = m.screen;
   if (m.screen == SC_WIFI) {
     wifiFrame(m, full);
+    return;
+  }
+  if (m.screen == SC_ODO) {
+    odoFrame(m, full);
     return;
   }
   if (m.screen == SC_GATE) {
@@ -1520,6 +1685,7 @@ void pageTap(const Model &m, int x, int y, ActionQueue &out) {
       break;
     case SC_GATE: gateTap(m, x, y, out); break;
     case SC_WIFI: wifiTap(m, x, y, out); break;
+    case SC_ODO: odoTap(m, x, y, out); break;
     default: break;
   }
 }

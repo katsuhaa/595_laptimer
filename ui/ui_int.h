@@ -167,7 +167,8 @@ uint16_t flashBg(const Model &m);                // background colour of the red
 void selftestFrame(const Model &m, bool full);
 void circuitFrame(const Model &m, uint32_t now, bool full);
 void streetFrame(const Model &m, uint32_t now, bool full);
-void pagesFrame(const Model &m, bool full);  // SC_LAPS .. SC_WIFI
+void pagesFrame(const Model &m, bool full);  // SC_LAPS .. SC_ODO
+void odoSwipe(const Model &m, int dx, ActionQueue &out);  // 走行記録: horizontal swipe = earlier / later period
 // pages: content height of the scrolled body (for clamping), tap handling
 int pageScrollMax(const Model &m);
 void pageTap(const Model &m, int x, int y, ActionQueue &out);

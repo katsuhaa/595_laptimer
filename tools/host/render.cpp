@@ -383,10 +383,10 @@ static void touchTests() {
   // settings: shift editor +100 on the red point, gate page
   m.screen = SC_SETTINGS;
   frame(m, g_now, &d);
-  t.tap(300, 66 + 76 * 2 + 38);  // シフトポイント
-  check(viewState().editor == 2, "touch: tap シフトポイント opens the editor");
+  t.tap(300, 66 + 76 * 3 + 38);  // シフトポイント (走行記録 is the first row)
+  check(viewState().editor == 3, "touch: tap シフトポイント opens the editor");
   const int scr = viewState().scroll;
-  const int edTop = 66 + 76 * 3 - scr;  // editor below the row
+  const int edTop = 66 + 76 * 4 - scr;  // editor below the row
   t.tap(20 + 2 * 144 + 64, edTop + 12 + 28);  // red chip
   check(viewState().shiftSel == 2, "touch: tap the red value selects it");
   t.tap(300, edTop + 80 + 32);  // +100
@@ -403,7 +403,7 @@ static void touchTests() {
   check(viewState().editor == -1, "touch: 閉じる closes the shift editor");
   t.swipe(300, 300, 300, 100);  // scroll to the top again
   t.swipe(300, 100, 300, 400);
-  t.tap(300, 66 + 76 + 38 - viewState().scroll);  // ゲート設定
+  t.tap(300, 66 + 76 * 2 + 38 - viewState().scroll);  // ゲート設定
   check(m.screen == SC_GATE, "touch: tap ゲート設定 -> gate page");
   // gate: pick a track point, set S2, back
   t.tap(212, 249);  // somewhere: may miss the track
@@ -439,7 +439,7 @@ static void touchTests() {
   t.swipe(300, 400, 300, 60);  // scroll down
   t.swipe(300, 400, 300, 60);
   const int sc2 = viewState().scroll;
-  t.tap(300, 66 + 76 * 6 + 38 - sc2);  // 記録
+  t.tap(300, 66 + 76 * 7 + 38 - sc2);  // 記録
   check(t.got(ACT_RECORD_STOP), "touch: tap 記録 while recording -> ACT_RECORD_STOP");
 }
 
@@ -532,7 +532,7 @@ static void wifiTests() {
   t.swipe(300, 400, 300, 60);
   t.swipe(300, 400, 300, 60);
   shot("page_settings_wifi_row", m);
-  t.tap(300, 66 + 76 * 7 + 38 - viewState().scroll);
+  t.tap(300, 66 + 76 * 8 + 38 - viewState().scroll);
   const Action *a = t.find(ACT_PAGE);
   check(a && a->arg == SC_WIFI && m.screen == SC_WIFI && viewState().wifiView == 0, "wifi: settings Wi-Fi row -> ACT_PAGE(SC_WIFI), list view");
   shot("wifi_list_connected", m);
@@ -914,6 +914,119 @@ static void timings() {
 }
 
 // ---------------------------------------------------------------- main
+// ---------------------------------------------------------------- 走行記録 (settings > 走行記録)
+// The values the app fills from core/odolog: 2026 with records from 9/10 (ODO 22,000) to today 11/8 (22,615)
+static void odoSample(Model &m, uint8_t level) {
+  OdoPage &o = m.odo;
+  o = OdoPage{};
+  o.storageOk = true;
+  o.records = 1234;
+  o.curOk = true;
+  o.cur = 22615;
+  o.sinceBootKm = 12;
+  o.dateOk = true;
+  o.level = level;
+  o.odoKnown = true;
+  o.canBack = true;
+  o.canFwd = false;
+  o.current = true;
+  o.canFiner = level < OL_DAY;
+  switch (level) {
+    case OL_YEAR:
+      o.first = OdoDate{ 2026, 1, 1, 4 };
+      o.last = OdoDate{ 2026, 12, 31, 4 };
+      o.odoStart = 22000, o.odoEnd = 22615, o.aboveS = 5025, o.canBack = false;
+      break;
+    case OL_QUARTER:
+      o.first = OdoDate{ 2026, 10, 1, 4 };
+      o.last = OdoDate{ 2026, 12, 31, 4 };
+      o.odoStart = 22050, o.odoEnd = 22615, o.aboveS = 3600;
+      break;
+    case OL_MONTH:
+      o.first = OdoDate{ 2026, 10, 1, 4 };
+      o.last = OdoDate{ 2026, 10, 31, 6 };
+      o.odoStart = 22050, o.odoEnd = 22340, o.aboveS = 1800, o.current = false, o.canFwd = true;
+      break;
+    case OL_WEEK:
+      o.first = OdoDate{ 2026, 11, 8, 0 };
+      o.last = OdoDate{ 2026, 11, 14, 6 };
+      o.odoStart = 22520, o.odoEnd = 22615, o.aboveS = 754;
+      break;
+    default:
+      o.first = o.last = OdoDate{ 2026, 11, 5, 4 };
+      o.odoStart = o.odoEnd = 22520, o.aboveS = 0, o.current = false, o.canFwd = true;
+      break;
+  }
+  o.km = o.odoEnd - o.odoStart;
+}
+static void odoPages(Model &m) {
+  m.screen = SC_ODO;
+  static const char *const kNames[OL_COUNT] = { "odo_year", "odo_quarter", "odo_month_past", "odo_week", "odo_day_no_drive" };
+  for (int lv = 0; lv < OL_COUNT; lv++) {
+    odoSample(m, (uint8_t)lv);
+    shot(kNames[lv], m);
+  }
+  sameAsFull(m, "odo_day_no_drive: incremental == full");
+  odoSample(m, OL_QUARTER);
+  m.odo.first = OdoDate{ 2026, 1, 1, 4 };
+  m.odo.last = OdoDate{ 2026, 3, 31, 2 };
+  m.odo.odoKnown = false, m.odo.canBack = false, m.odo.canFwd = true, m.odo.current = false;
+  shot("odo_no_record", m);
+  odoSample(m, OL_YEAR);
+  m.odo.dateOk = false;
+  shot("odo_wait_time", m);
+  m.odo.curOk = false;
+  m.odo.storageOk = false;
+  shot("odo_wait_odo_no_area", m);
+  sameAsFull(m, "odo_wait_odo_no_area: incremental == full");
+  odoSample(m, OL_YEAR);
+  m.screen = SC_SETTINGS;
+  shot("page_settings_odo_row", m);
+}
+static void odoTests() {
+  Model &m = g_m;
+  baseModel(m);
+  odoSample(m, OL_YEAR);
+  m.touchEnabled = true;
+  Touch t;
+  t.m = &m;
+  Dirty d;
+  m.screen = SC_SETTINGS;
+  frame(m, g_now, &d);
+  t.tap(300, 66 + 38);  // 走行記録 (first row)
+  const Action *a = t.find(ACT_PAGE);
+  check(a && a->arg == SC_ODO && m.screen == SC_ODO, "odo: settings 走行記録 row -> ACT_PAGE(SC_ODO)");
+  t.tap(16 + 2 * 114 + 54, 78 + 26);  // 1 ヶ月 tab
+  a = t.find(ACT_ODO);
+  check(a && a->arg == OM_LEVEL && a->value == OL_MONTH, "odo: tap 1 ヶ月 -> ACT_ODO(OM_LEVEL, month)");
+  t.tap(16 + 54, 78 + 26);  // the tab shown
+  check(!t.got(ACT_ODO), "odo: tap on the level shown does nothing");
+  t.tap(100, 378 + 32);  // ‹ 前 (1 年: nothing earlier)
+  check(!t.got(ACT_ODO), "odo: ‹ 前 does nothing without an earlier period");
+  odoSample(m, OL_MONTH);
+  frame(m, g_now, &d);
+  t.tap(100, 378 + 32);
+  a = t.find(ACT_ODO);
+  check(a && a->arg == OM_PREV, "odo: ‹ 前 -> ACT_ODO(OM_PREV)");
+  t.tap(484, 378 + 32);
+  a = t.find(ACT_ODO);
+  check(a && a->arg == OM_NEXT, "odo: 次 › -> ACT_ODO(OM_NEXT)");
+  t.swipe(200, 250, 360, 254);  // finger to the right: earlier
+  a = t.find(ACT_ODO);
+  check(a && a->arg == OM_PREV && m.screen == SC_ODO, "odo: swipe right -> earlier period (not another page)");
+  t.swipe(400, 250, 240, 254);
+  a = t.find(ACT_ODO);
+  check(a && a->arg == OM_NEXT && m.screen == SC_ODO, "odo: swipe left -> later period");
+  m.odo.dateOk = false;
+  frame(m, g_now, &d);
+  t.tap(16 + 3 * 114 + 54, 78 + 26);
+  t.tap(100, 378 + 32);
+  t.swipe(200, 250, 360, 254);
+  check(!t.got(ACT_ODO), "odo: before the date is known the tabs, buttons and swipes do nothing");
+  t.tap(40, 32);  // ‹ 設定
+  check(m.screen == SC_SETTINGS, "odo: ‹ 設定 -> settings");
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) g_out = argv[1];
   mkdir("out", 0755);
@@ -1079,9 +1192,9 @@ int main(int argc, char **argv) {
   shot("page_settings", m);
   {
     ViewState v = view(SC_SETTINGS);
-    v.editor = 2;
+    v.editor = 3;  // シフトポイント (after 走行記録, コース, ゲート設定)
     v.shiftSel = 2;
-    v.scroll = 76;
+    v.scroll = 152;
     shot("page_settings_shift_edit", m, &v);
   }
   m.screen = SC_GATE;
@@ -1092,9 +1205,12 @@ int main(int argc, char **argv) {
     sameAsFull(m, "page_gate: incremental == full");
   }
 
-  // ---- touch, Wi-Fi page, glyphs, timings
+  odoPages(m);
+
+  // ---- touch, Wi-Fi page, 走行記録, glyphs, timings
   touchTests();
   wifiTests();
+  odoTests();
   {
     char det[64];
     snprintf(det, sizeof det, "%u missing", (unsigned)missingGlyphs());

@@ -316,6 +316,42 @@ void fillSettings(const timing::View& tv) {
 
 // Track of the newest session for the gate page: main log lat/lon at evenly spaced places of the file
 // (a seek and one short read per point, the storage lock taken per read: the logger keeps writing)
+// 走行記録 (settings > 走行記録, and the odometer on the settings row)
+void fillOdo() {
+  app::OdoSnap sn;
+  app::odoSnapshot(&sn);
+  ui::OdoPage& o = g_m->odo;
+  o = ui::OdoPage{};
+  o.storageOk = sn.st.storageOk;
+  o.records = sn.st.records;
+  o.curOk = sn.st.curOk;
+  o.cur = sn.st.cur;
+  o.sinceBootKm = sn.st.todayKm;  // before the date is known: since power-up
+  o.dateOk = sn.dateOk;
+  o.level = static_cast<uint8_t>(sn.level >= 0 && sn.level < ui::OL_COUNT ? sn.level : 0);
+  if (!sn.dateOk) return;
+  auto date = [](int32_t day, ui::OdoDate* d) {
+    int y, m, dd, w;
+    lt::OdoLog::civil(day, &y, &m, &dd, &w);
+    d->y = static_cast<uint16_t>(y);
+    d->m = static_cast<uint8_t>(m);
+    d->d = static_cast<uint8_t>(dd);
+    d->wday = static_cast<uint8_t>(w);
+  };
+  const lt::OdoLog::Period& p = sn.p;
+  date(p.first, &o.first);
+  date(p.last, &o.last);
+  o.current = p.current;
+  o.odoKnown = p.odoKnown;
+  o.odoEnd = p.odoEnd;
+  o.odoStart = p.odoStart;
+  o.km = p.km;
+  o.aboveS = p.aboveS;
+  o.canBack = p.canBack;
+  o.canFwd = p.canFwd;
+  o.canFiner = sn.canFiner;
+}
+
 void loadGateTrack() {
   ui::GatePage& gp = g_m->gate;
   gp.n = 0;
@@ -481,6 +517,7 @@ void apply(const ui::Action& a, bool touchOn) {
   switch (a.kind) {
     case ui::ACT_PAGE:
       if (touchOn && a.arg < ui::SC_COUNT && a.arg != ui::SC_SELFTEST) {
+        if (a.arg == ui::SC_ODO && g_page != ui::SC_ODO) app::odoNavOpen();  // this year
         g_page = a.arg;
         if (g_page == ui::SC_GATE) g_gateLoaded = false;
       }
@@ -497,6 +534,9 @@ void apply(const ui::Action& a, bool touchOn) {
       if (!net::saveNetwork(a.ssid, a.pass)) Serial.printf("wifi: could not register %s\n", a.ssid);
       break;
     case ui::ACT_WIFI_FORGET: net::forgetNetwork(a.ssid); break;
+    case ui::ACT_ODO:
+      if (touchOn) app::odoNavMove(a.arg, a.value);
+      break;
     default: break;
   }
 }
@@ -709,6 +749,7 @@ void task(void*) {
     if (g_m->screen == ui::SC_DATA) fillData(s, st.tzMin);
     if (g_m->screen == ui::SC_SETTINGS || g_m->screen == ui::SC_GATE) fillSettings(*tv);
     if (g_m->screen == ui::SC_SETTINGS) fillData(s, st.tzMin);  // the Wi-Fi row shows the joined network
+    if (g_m->screen == ui::SC_SETTINGS || g_m->screen == ui::SC_ODO) fillOdo();  // the row shows the ODO
     // the Wi-Fi page may switch the radio on (scan, join) also before the 30 s standstill
     net::setSetup(g_m->screen == ui::SC_WIFI);
     if (g_m->screen == ui::SC_WIFI) fillWifi();

@@ -6,7 +6,8 @@
 //   imu     (0, 5)  QMI8658 200 Hz -> IMU log, car-frame G (ImuCal at 50 Hz like the round gauge), BLE IMU 25 Hz
 //   logger  (1, 4)  stream buffers -> XTSD files, 1 s sync (logger.cpp)
 //   ui      (1, 3)  touch -> ui actions, model -> renderer -> panel (ui_glue.cpp)
-//   house   (1, 2)  self-test, storage statistics, capacity management, config reloads, settings saving
+//   house   (1, 2)  self-test, storage statistics, capacity management, config reloads, settings saving,
+//                   走行記録 (odometer log in the internal flash, core/odolog)
 //   net     (1, 1)  Wi-Fi only while stopped, mDNS, web module (net.cpp, web/)
 // All shared values live in g_live (one mutex); tasks copy what they need.
 #include "app.h"
@@ -28,6 +29,7 @@
 #include "../hw/touch.h"
 #include "../web/web.h"
 #include "esp_heap_caps.h"
+#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -62,6 +64,43 @@ lt::gtime::Clock g_clock;
 lt::DriveState g_drive;
 lt::ImuCal g_imu(lt::IMU_DEF_UP, lt::IMU_DEF_FWD);
 lt::StorePlan g_store;
+
+// 走行記録 (core/odolog; round gauge 2.15.0-2.15.3). The records go to the internal flash, not the XTSD (like the
+// round gauge's spiffs partition): the first ODO_AREA_BYTES (896 KB) of the data partition "ffat" of
+// app3M_fat9M_16MB, which nothing else uses. Changing the Partition Scheme loses them. A flash erase/write stalls
+// both cores for some ms: records are written only at <= 10 km/h, at most once a minute.
+// ▲▼ 累積時間 and 過負荷時間 (core/trip, core/load; round gauge trip / load). Updated by the link task under g_mu,
+// kept every minute in NVS (settings::Times) like the round gauge's saveTimes
+lt::Trip g_trip;
+lt::Load g_load;
+lt::LoadSet loadSetOf(const settings::Settings& s) {
+  lt::LoadSet x;
+  x.loadRpm = s.loadRpm;
+  x.loadYellowMin = s.loadYellowMin;
+  x.loadRedMin = s.loadRedMin;
+  x.loadResetMin = s.loadResetMin;
+  return x;
+}
+
+SemaphoreHandle_t g_odoMu = nullptr;  // g_odo, g_odoNav (house task writes, ui task reads)
+lt::OdoLog* g_odo = nullptr;          // PSRAM (4 KB sector buffer inside)
+lt::OdoNav g_odoNav;
+struct OdoFlash : lt::OdoStorage {
+  const esp_partition_t* part = nullptr;
+  uint32_t size() override {
+    if (!part) return 0;
+    return part->size < lt::ODO_AREA_BYTES ? part->size : lt::ODO_AREA_BYTES;
+  }
+  bool read(uint32_t off, void* data, size_t n) override {
+    return part && off + n <= size() && esp_partition_read(part, off, data, n) == ESP_OK;
+  }
+  bool write(uint32_t off, const void* data, size_t n) override {
+    return part && off + n <= size() && esp_partition_write(part, off, data, n) == ESP_OK;
+  }
+  bool erase(uint32_t off, size_t n) override {
+    return part && off + n <= size() && esp_partition_erase_range(part, off, n) == ESP_OK;
+  }
+} g_odoFlash;
 
 volatile bool g_reloadConfig = false;  // set by the web hook, done by the house task
 uint32_t g_reloadMask = 0;              // CFG_* bits (atomic: set by the web/ui tasks, taken by the house task)
@@ -486,8 +525,6 @@ bool g_near = false;
 uint32_t g_nearMs = 0;
 constexpr uint32_t kNearHoldMs = 10000;
 uint32_t g_driveMs = 0;  // millis() of the last DriveState update
-bool g_odoSetPending = false;  // the owner's ODO from the Web page (under g_mu), applied by the gnss task
-int64_t g_odoSetMm = 0;
 
 // DriveState (gnss task only): every epoch, and every 100 ms when no NAV-PVT arrives (GNSS missing)
 void driveUpdate(uint32_t nowMs, const lt::VehValues& v, bool gnssOk, float gnssKmh) {
@@ -501,14 +538,6 @@ void driveUpdate(uint32_t nowMs, const lt::VehValues& v, bool gnssOk, float gnss
   in.nearCourse = g_near;
   in.courseSession = g_sessOpen && strcmp(g_sessCid, "street") != 0;
   in.lapRunning = g_sessOpen && g_courseOn && timing::lapRunning();
-  {
-    Lock l(g_mu);
-    if (g_odoSetPending) {
-      g_odoSetPending = false;
-      g_drive.setOdometerMm(g_odoSetMm);
-      g_settingsDirty = true;
-    }
-  }
   const uint32_t ev = g_drive.update(in);
   g_driveMs = nowMs;
   // openSession waits for the files (time from GNSS or RTC, the logger done with the previous ones) while 記録 is on:
@@ -527,9 +556,7 @@ void driveUpdate(uint32_t nowMs, const lt::VehValues& v, bool gnssOk, float gnss
   g_live.screen = g_drive.screen();
   g_live.speedOk = g_drive.speedOk();
   g_live.speedKmh = g_drive.speedKmh();
-  g_live.odoKm = g_drive.odometerKm();
-  g_live.trackHours = g_drive.trackHours();
-  g_live.odoMm = g_drive.odometerMm();
+  g_live.trackHours = g_drive.trackHours();  // the ODO comes from the B-CAN (link task)
   g_live.trackMs = g_drive.trackMs();
   g_live.sessionOpen = g_logOpen;  // "being recorded" (the web never deletes it; the laps page shows its time)
   strncpy(g_live.sessionId, g_logOpen ? g_sessId : "", sizeof g_live.sessionId - 1);
@@ -669,10 +696,12 @@ void linkTask(void*) {
     hw::linkPoll(parser, now);  // feeds the parser: onCan -> g_veh (same task)
     lt::VehValues v;
     lt::LightInfo li;
+    lt::OdoInfo oi;
     {
       Lock l(g_vehMu);
       g_veh.getLinkValues(parser, now, &v);
       g_veh.lightInfo(&li, now);
+      g_veh.odoInfo(&oi, now);
     }
     lt::mlink::Stats st;
     parser.getStats(&st);
@@ -682,6 +711,27 @@ void linkTask(void*) {
       g_live.linkUp = v.linkUp;
       g_live.canPerSec = st.canPerSec;
       g_live.lightOn = li.have && li.on;
+      g_live.odo = oi;
+      // ODO for the maintenance and the web: the car's (B-CAN). UI設計 v1.0 §7
+      g_live.odoKm = oi.have ? static_cast<float>(oi.km) : 0.0f;
+      g_live.odoMm = oi.have ? static_cast<int64_t>(oi.km) * 1000000 : 0;
+      // round gauge loop: trip::update (boundary = 過負荷 回転数), load::update, load::onTime once the time is known
+      const lt::LoadSet ls = loadSetOf(g_set);
+      g_trip.update(v, now, g_set.loadRpm);
+      g_load.update(v, ls, now);
+      if (g_live.timeOk) {
+        const int64_t utcMs = g_live.utcMsAtFix + static_cast<int64_t>(now - g_live.utcBaseMs);
+        g_load.onTime(static_cast<uint32_t>(utcMs / 1000), ls, now);
+      }
+      g_live.aboveMs = g_trip.aboveMs();
+      g_live.belowMs = g_trip.belowMs();
+      g_live.loadMs = g_load.valueMs();
+      g_live.loadLevel = g_load.level(ls);
+      g_live.loadWarned = g_load.warned(ls);
+      g_live.loadCool = g_load.coolDown(now);
+      g_live.loadCoolLeftMs = g_load.coolLeftMs(ls, now);
+      g_live.loadLowMs = g_load.lowMs(now);
+      g_live.maintDue = lt::tripMaintDue(g_trip.aboveMs(), g_set.maintHours);
     }
     vTaskDelay(pdMS_TO_TICKS(2));
   }
@@ -886,6 +936,82 @@ void memReport(uint32_t nowMs) {
                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 }
 
+// round gauge saveTimes (TIME_SAVE_MS = 60 s): ▲▼ when changed; the overload time with the UTC of the save while
+// it is not 0 (the next start-up subtracts the time the device was off). force: right away (累積時間 リセット)
+void saveTimes(const Live& s, uint32_t now, bool force) {
+  static uint32_t lastMs = 0;
+  static bool loaded = false;
+  static settings::Times saved;
+  if (!loaded) {
+    loaded = true;
+    settings::loadTimes(&saved);
+  }
+  if (!force && now - lastMs < 60000) return;
+  lastMs = now;
+  settings::Times t = saved;
+  t.aboveMs = s.aboveMs;
+  t.belowMs = s.belowMs;
+  t.loadMs = s.loadMs;
+  t.loadUtc = s.timeOk ? static_cast<uint32_t>((s.utcMsAtFix + static_cast<int64_t>(now - s.utcBaseMs)) / 1000) : 0;
+  t.loadLowMs = s.loadLowMs;
+  const bool wt = t.aboveMs != saved.aboveMs || t.belowMs != saved.belowMs;
+  const bool wl = t.loadMs != saved.loadMs || (t.loadMs > 0 && (t.loadUtc != saved.loadUtc || t.loadLowMs != saved.loadLowMs));
+  if (!wt && !wl) return;
+  if (settings::saveTimes(t)) saved = t;
+}
+
+const char* odoReasonName(uint8_t r) {
+  return r == lt::OdoLog::R_STILL ? "standing" : r == lt::OdoLog::R_LOW ? "slow" : r == lt::OdoLog::R_REVERSE ? "reverse"
+         : r == lt::OdoLog::R_CLOSE ? "day close" : "?";
+}
+// one serial line (at start-up and after each record), like the round gauge's odoPrint
+void odoPrint(const char* head) {
+  lt::OdoLog::Status st;
+  {
+    Lock l(g_odoMu);
+    g_odo->status(&st);
+  }
+  if (!st.storageOk) {
+    Serial.printf("odo log: %sflash area %s\n", head, g_odoFlash.size() ? "not readable" : "missing (check the Partition Scheme)");
+    return;
+  }
+  if (!st.lastUtc) {
+    Serial.printf("odo log: %s0 records (room for %lu)\n", head, (unsigned long)st.capacity);
+    return;
+  }
+  int y, m, d, w;
+  const uint32_t l = st.lastUtc + lt::kOdoTzSec;
+  lt::OdoLog::civil(static_cast<int32_t>(l / 86400u), &y, &m, &d, &w);
+  Serial.printf("odo log: %s%04d-%02d-%02d %02lu:%02lu ODO %lu, that day %lu km, over-rpm %lu s (%s). records %lu / %lu, "
+                "written %lu, failed %lu\n",
+                head, y, m, d, (unsigned long)(l / 3600 % 24), (unsigned long)(l / 60 % 60), (unsigned long)st.lastOdo,
+                (unsigned long)st.lastKm, (unsigned long)st.lastAboveS, odoReasonName(st.lastReason),
+                (unsigned long)st.records, (unsigned long)st.capacity, (unsigned long)st.writes, (unsigned long)st.failures);
+}
+// every house loop (1 s): the write rule is in OdoLog::update (<= 10 km/h or reverse, once a minute at most)
+void odoPoll(const Live& s, uint32_t now) {
+  static uint32_t writes = 0;
+  if (!g_odo) return;
+  lt::OdoLog::Input in;
+  memset(&in, 0, sizeof in);
+  in.odoOk = s.odo.seen;
+  in.odoHave = s.odo.have;
+  in.odoKm = s.odo.km;
+  in.speedOk = s.veh.speedOk;  // CAN vehicle speed, as the round gauge
+  in.speedKmh = s.veh.speedKmh;
+  in.reverse = s.veh.reverseOk && s.veh.reverse;
+  in.timeOk = s.timeOk;  // GNSS, or the RTC that the GNSS set (its oscillator kept running)
+  in.utc = s.timeOk ? static_cast<uint32_t>((s.utcMsAtFix + static_cast<int64_t>(now - s.utcBaseMs)) / 1000) : 0;
+  in.aboveMs = s.aboveMs;
+  bool wrote;
+  {
+    Lock l(g_odoMu);
+    g_odo->update(in, now);
+    wrote = g_odo->wroteSince(&writes);
+  }
+  if (wrote) odoPrint("wrote ");
+}
+
 void houseTask(void* arg) {
   const uint32_t flags = reinterpret_cast<uint32_t>(arg);
   memReport(millis());
@@ -923,6 +1049,8 @@ void houseTask(void* arg) {
         stillSince = now ? now : 1;
       }
       const bool moved = s.odoMm != g_set.odoMm || s.trackMs != g_set.trackMs;
+      odoPoll(s, now);
+      saveTimes(s, now, false);
       if (g_settingsDirty || (moved && stillSince && now - stillSince >= 3000) || (moved && now - lastSave > 300000)) {
         g_settingsDirty = false;  // before the copy: a change made during the save is saved next round
         settings::Settings copy;
@@ -958,13 +1086,6 @@ void houseTask(void* arg) {
 }
 
 // ------------------------------------------------------------------------------------------- web hooks
-bool hookSetOdometer(float km) {
-  if (!(km >= 0.0f && km <= 999999.9f)) return false;
-  Lock l(g_mu);
-  g_odoSetMm = static_cast<int64_t>(km * 10.0f + 0.5f) * 100000;  // 0.1 km steps as typed
-  g_odoSetPending = true;
-  return true;
-}
 
 void hookStatus(web::Status* s) {
   Live l;
@@ -985,11 +1106,7 @@ void hookStatus(web::Status* s) {
   s->storageLow = l.storageWarn;
   s->utcMs = l.timeOk ? l.utcMsAtFix + static_cast<int64_t>(millis() - l.utcBaseMs) : 0;
   s->tzMin = g_set.tzMin;
-  s->odoKm = l.odoKm > 0 ? l.odoKm : -1.0f;
-  {
-    Lock k(g_mu);
-    if (g_odoSetPending) s->odoKm = static_cast<float>(g_odoSetMm) * 1e-6f;  // set by the page, not yet applied
-  }
+  s->odoKm = l.odo.have ? static_cast<float>(l.odo.km) : -1.0f;  // B-CAN
   s->trackHours = l.trackHours;
 }
 bool hookLock(uint32_t ms) { return hw::sdLock(ms); }
@@ -1024,7 +1141,6 @@ void webUp() {
   h.sessionsChanged = hookSessionsChanged;
   h.storageMounted = hw::sdMounted;
   h.formatStorage = hw::sdFormatIfEmpty;
-  h.setOdometer = hookSetOdometer;
   web::begin(hw::sd(), h);
 }
 void webDown() { web::end(); }
@@ -1056,6 +1172,28 @@ void setPhaseRun() {
 void setRecording(bool on) { g_recording = on; }
 bool recording() { return g_recording; }
 
+void odoNavOpen() {
+  if (!g_odo) return;
+  Lock l(g_odoMu);
+  g_odoNav.open(*g_odo);
+}
+void odoNavMove(uint8_t move, int level) {
+  if (!g_odo) return;
+  Lock l(g_odoMu);
+  if (move == 0) g_odoNav.prev(*g_odo);       // ui::OM_PREV
+  else if (move == 1) g_odoNav.next(*g_odo);  // ui::OM_NEXT
+  else g_odoNav.setLevel(level, *g_odo);      // ui::OM_LEVEL
+}
+void odoSnapshot(OdoSnap* out) {
+  memset(out, 0, sizeof *out);
+  if (!g_odo) return;
+  Lock l(g_odoMu);
+  g_odo->status(&out->st);
+  out->level = g_odoNav.level();
+  out->dateOk = g_odo->periodAt(g_odoNav.level(), g_odoNav.anchor(), &out->p);
+  out->canFiner = g_odoNav.canFiner(*g_odo);
+}
+
 bool writeConfigFile(const char* name, const char* text, int len) {
   char path[48], tmp[52];
   snprintf(path, sizeof path, "/config/%s", name);
@@ -1086,12 +1224,27 @@ void start() {
   g_vehMu = xSemaphoreCreateMutex();
   if (!settings::load(&g_set)) Serial.println("settings: defaults");
   if (g_set.imuCalOk) g_imu.importCal(g_set.imuCal);
+  {  // round gauge start-up: ▲▼ and the overload time with the UTC of its save
+    settings::Times t;
+    if (settings::loadTimes(&t)) {
+      g_trip.setTimes(t.aboveMs, t.belowMs);
+      g_load.restore(t.loadMs, t.loadUtc, t.loadLowMs);
+    }
+  }
   g_drive.setOdometerMm(g_set.odoMm);
   g_drive.setTrackMs(g_set.trackMs);
   void* mc = heap_caps_malloc(sizeof(lt::CourseDb), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   void* mm = heap_caps_malloc(sizeof(lt::Maint), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   g_courses = mc ? new (mc) lt::CourseDb() : new lt::CourseDb();  // internal RAM if PSRAM failed
   g_maint = mm ? new (mm) lt::Maint() : new lt::Maint();
+  // 走行記録: read every record of the flash area into the day table (PSRAM), as the round gauge's odo::begin
+  g_odoMu = xSemaphoreCreateMutex();
+  void* mo = heap_caps_malloc(sizeof(lt::OdoLog), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  void* mt = heap_caps_malloc(lt::OdoLog::kTableBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  g_odo = mo ? new (mo) lt::OdoLog() : new lt::OdoLog();
+  g_odoFlash.part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, "ffat");
+  g_odo->begin(&g_odoFlash, mt);
+  odoPrint("");
 
   hw::i2cBegin();
   const bool lcdOk = hw::displayBegin();

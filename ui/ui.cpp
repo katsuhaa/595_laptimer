@@ -137,7 +137,11 @@ void touch(const Input &inp, uint32_t nowMs, const Model &m, ActionQueue &out) {
   g.mode = TM_IDLE;
   if (mode == TM_HSWIPE) {
     if (iabs(dx) < kSwipeMin || iabs(dx) * 2 < iabs(dy) * 3) return;  // too short or too steep
-    if (m.screen == SC_SELFTEST || m.screen == SC_GATE || m.screen == SC_WIFI || pageModal()) return;
+    if (m.screen == SC_ODO && m.screen == g.shown) {  // 走行記録: earlier / later period, not another page
+      odoSwipe(m, dx, out);
+      return;
+    }
+    if (m.screen == SC_SELFTEST || m.screen == SC_GATE || m.screen == SC_WIFI || m.screen == SC_ODO || pageModal()) return;
     const int idx = pageIndex(m.screen);
     if (idx < 0) return;
     const int to = dx < 0 ? idx + 1 : idx - 1;  // finger to the left = next page

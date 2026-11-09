@@ -27,6 +27,7 @@ enum Screen : uint8_t {
   SC_SETTINGS,
   SC_GATE,          // settings > gate setting (child page of SC_SETTINGS)
   SC_WIFI,          // settings > Wi-Fi: registered networks, scan, on-screen keyboard (child page of SC_SETTINGS)
+  SC_ODO,           // settings > 走行記録: odometer log by period (child page of SC_SETTINGS; round gauge 2.15.x)
   SC_COUNT
 };
 enum DriveKind : uint8_t { DRIVE_CIRCUIT = 0, DRIVE_STREET };
@@ -216,6 +217,31 @@ struct WifiPage {
   char joinSsid[33] = "";
 };
 
+// ---------------------------------------------------------------- 走行記録 (settings > 走行記録, SC_ODO)
+// Odometer log of the round gauge 2.15.x (core/odolog): one period at a time. The app keeps the level and
+// the day shown (opening the page shows this year) and fills the period's values.
+enum OdoLevel : uint8_t { OL_YEAR = 0, OL_QUARTER, OL_MONTH, OL_WEEK, OL_DAY, OL_COUNT };
+struct OdoDate {
+  uint16_t y;
+  uint8_t m, d, wday;  // wday 0 = Sunday
+};
+struct OdoPage {
+  bool storageOk = false;   // the flash area exists and was read
+  uint32_t records = 0;     // records kept
+  bool curOk = false;       // the odometer was received
+  uint32_t cur = 0;         // odometer now [km]
+  uint32_t sinceBootKm = 0; // shown before the date is known
+  bool dateOk = false;      // today is known: the period below is valid
+  uint8_t level = OL_YEAR;  // OdoLevel shown
+  OdoDate first{}, last{};  // the period (both days included)
+  bool current = false;     // contains today
+  bool odoKnown = false;    // the end odometer is known (else 記録なし)
+  uint32_t odoEnd = 0, odoStart = 0, km = 0;
+  uint32_t aboveS = 0;      // over-rpm time (>= 3000 rpm) [s]
+  bool canBack = false, canFwd = false;  // an earlier / a later period exists
+  bool canFiner = false;    // a finer level can be chosen (not 1 day, date known)
+};
+
 // ---------------------------------------------------------------- the whole model
 struct Model {
   uint8_t screen = SC_SELFTEST;  // Screen, chosen by the app
@@ -258,6 +284,7 @@ struct Model {
   SettingsPage settings;
   GatePage gate;
   WifiPage wifi;
+  OdoPage odo;
 };
 
 // ---------------------------------------------------------------- touch input (600x450 landscape coordinates)
@@ -282,7 +309,9 @@ enum ActionKind : uint8_t {
   ACT_WIFI_SAVE,      // register ssid with pass ("" = open network; else 8..63 characters or 64 hex digits),
                       // replacing the password of a registered one; it goes first in the list and is joined now
   ACT_WIFI_FORGET,    // remove the registered network ssid
+  ACT_ODO,            // 走行記録 page: arg = OdoMove; for OM_LEVEL value = OdoLevel. The app moves and fills model.odo
 };
+enum OdoMove : uint8_t { OM_PREV = 0, OM_NEXT, OM_LEVEL };
 enum SettingKey : uint8_t {
   SET_SHIFT_GREEN = 0,  // value [rpm]
   SET_SHIFT_YELLOW,

@@ -12,6 +12,8 @@
 //   fuel      C-CAN 0A18A000 b5 = % (0 and > 100 are not values)           confirmed 10/22
 //   sport     C-CAN 0A18A000 b4 & 0x10                                     confirmed 10/28
 //   light     B-CAN 06214000 b0 & 0x08 (light switch)                      confirmed 10/26
+//   odometer  B-CAN 0C014003 b1 low 4 bits + b2 + b3 (20 bits, big endian) = km
+//             (round gauge 2.15.0, katsuhaa/abarth595-round-gauge 7c43949)   confirmed 10/22, 11/2
 //   gear      R from the bit above; 1-5 from rpm / speed (VEH_GEAR_*); below 2 km/h N
 // Not thread-safe: onFrame and getValues/lightInfo from different tasks need a lock around them.
 #pragma once
@@ -35,6 +37,13 @@ constexpr uint8_t VEH_REVERSE_MASK = 0x04;  // 0A18A001 b7
 constexpr uint32_t VEH_ID_LIGHT = 0x06214000UL;  // B-CAN
 constexpr int VEH_LIGHT_BYTE = 0;
 constexpr uint8_t VEH_LIGHT_MASK = 0x08;
+// Odometer (round gauge 2.15.0 config.h VEH_ID_ODO, ODO_*): a value smaller than the one in use,
+// or more than ODO_MAX_JUMP_KM above it, is dropped, unless the same value comes ODO_ACCEPT_REPEAT
+// times in a row (a broken first value, or the odometer really changed).
+constexpr uint32_t VEH_ID_ODO = 0x0C014003UL;  // B-CAN
+constexpr uint32_t ODO_MAX_JUMP_KM = 5;
+constexpr int ODO_ACCEPT_REPEAT = 20;
+constexpr uint32_t ODO_STALE_MS = 2000;  // older than this: "old" (the odometer log does not write)
 constexpr uint8_t VEH_SPORT_MASK = 0x10;  // 0A18A000 b4; "seen" uses VEH_FUEL_TIMEOUT_MS like fuel
 // No signal after this long. c6_can_link resends unchanged ids every second, so these are longer.
 constexpr uint32_t VEH_TIMEOUT_MS = 2000;  // rpm, throttle, speed, clutch, boost, reverse
@@ -94,6 +103,14 @@ struct LightInfo {
   uint32_t changes;  // switches (the first value is not counted)
 };
 
+// Odometer details (round gauge veh::OdoInfo)
+struct OdoInfo {
+  bool have;          // a usable value was received
+  bool seen;          // received within ODO_STALE_MS (have and not seen = "old")
+  uint32_t km;        // value in use
+  uint32_t rejected;  // frames dropped (smaller, or more than ODO_MAX_JUMP_KM larger)
+};
+
 class VehDecoder {
  public:
   VehDecoder() { begin(); }
@@ -108,6 +125,7 @@ class VehDecoder {
   void getLinkValues(const mlink::Parser& link, uint32_t nowMs, VehValues* out);
   void fuelInfo(FuelInfo* out, uint32_t nowMs) const;
   void lightInfo(LightInfo* out, uint32_t nowMs);  // may complete a pending switch
+  void odoInfo(OdoInfo* out, uint32_t nowMs) const;
   float lastRatio() const { return lastRatio_; }  // last rpm per km/h used for the gear
 
  private:
@@ -133,6 +151,11 @@ class VehDecoder {
     bool lightPend;       // a different value arrived; waiting VEH_LIGHT_SETTLE_MS
     uint32_t lightPendMs;
     uint32_t lightChanges;
+    bool odoHave;
+    uint32_t odoKm, odoMs;
+    uint32_t odoRejected;
+    uint32_t odoCand;  // a dropped value that keeps coming
+    int odoCandN;
   };
   void lightSettle(uint32_t nowMs);
   void updateGear(bool rpmOk, bool speedOk, bool clutchOk);

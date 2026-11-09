@@ -56,8 +56,7 @@ label.btn{cursor:pointer}
 .fg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:8px}
 .fg label{font-size:11.5px;color:var(--label);display:flex;flex-direction:column;gap:2px}
 .fg label.w2{grid-column:span 2} .fg label.w3{grid-column:span 3}
-.fg input,#odokm{font:inherit;font-size:16px;width:100%;min-width:0;padding:6px 7px;border-radius:7px;border:1px solid #333;background:#000;color:var(--text)}
-#odokm{width:11em;flex:0 0 auto}
+.fg input{font:inherit;font-size:16px;width:100%;min-width:0;padding:6px 7px;border-radius:7px;border:1px solid #333;background:#000;color:var(--text)}
 .fg .grp{grid-column:span 3;font-size:12px;color:var(--text2);margin-top:4px}
 #toast{position:fixed;left:12px;right:12px;bottom:12px;max-width:616px;margin:0 auto;background:#1b2a3c;border:1px solid #2f4e74;color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px;display:none;z-index:9}
 .hint{font-size:13px;color:var(--text2);margin:6px 0 0}
@@ -90,8 +89,6 @@ progress{width:100%;height:6px;margin-top:6px}
 <section id="s-maint" style="--c:var(--orange)">
 <h2>整備（maint.json の編集）</h2>
 <div class="hint" id="maintinfo"></div>
-<div class="row"><input type="number" id="odokm" inputmode="decimal" min="0" max="999999.9" step="0.1" placeholder="車の ODO（km）"><button id="odoset">ODO を合わせる</button></div>
-<div class="small" id="odoinfo"></div>
 <div id="maint"></div>
 <div class="row"><button id="madd">＋ 項目を追加</button><button class="pri" id="msend">本機へ送る</button></div>
 <div class="small" id="mverdict"></div>
@@ -569,21 +566,6 @@ $('vbopick').addEventListener('change', async () => {
   info.textContent = (nm ? 'トラック: ' + nm[1].trim() + '　' : '') + '線 ' + lines.length + ' 本（' + lines.map(s => s.split('¬').pop().trim()).join('、') + '）。送るのは先頭 ' + size(vboPart.size) + '。';
   $('vbosend').disabled = false;
 });
-// ODO base value (UI設計 §9: ODO = the value set here + the integrated CAN speed)
-$('odoset').addEventListener('click', async () => {
-  const info = $('odoinfo');
-  const t = $('odokm').value.trim();
-  const km = Number(t);
-  if (!t || !isFinite(km) || km < 0 || km > 999999.9) { info.textContent = '0〜999999.9 km の数で入れてください'; info.className = 'small err'; return; }
-  const v = Math.round(km * 10) / 10;
-  if (!confirm('本機の ODO を ' + v.toLocaleString() + ' km にします')) return;
-  const res = await post('/api/odo?km=' + encodeURIComponent(String(v)));
-  info.textContent = res.ok ? 'ODO を ' + v.toLocaleString() + ' km にしました' : 'ODO を変えられません: ' + (res.message || ERR[res.error] || res.error);
-  info.className = 'small ' + (res.ok ? 'ok' : 'err');
-  if (res.ok) $('odokm').value = '';
-  await refreshStatus(); showMaint();
-});
-
 $('vbosend').addEventListener('click', async () => {
   if (!vboPart) return;
   const info = $('vboinfo');

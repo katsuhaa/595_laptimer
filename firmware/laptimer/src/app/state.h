@@ -57,6 +57,16 @@ struct Live {
   bool linkUp;
   uint32_t canPerSec;
   bool lightOn;
+  lt::OdoInfo odo;   // B-CAN odometer (走行記録, 整備)
+  // round gauge trip / load (core/trip, core/load; the link task updates them every loop)
+  uint32_t aboveMs, belowMs;  // ▲▼ 累積時間 (kept over power-off)
+  uint32_t loadMs;            // 過負荷時間
+  uint8_t loadLevel;          // 0 white, 1 yellow, 2 red
+  bool loadWarned;            // from yellow until 0 (the circuit screen shows it)
+  bool loadCool;              // クールダウン
+  uint32_t loadCoolLeftMs;    // until the reset
+  uint32_t loadLowMs;         // below 過負荷 回転数 for
+  bool maintDue;              // ▲ reached メンテナンスまでの累積時間
   // IMU (car frame, averaged over the last GNSS epoch)
   bool imuOk;
   float lonG, latG, vertG, yawDps;
@@ -104,5 +114,18 @@ lt::Maint* maintRef();
 lt::CourseDb* coursesRef();
 const lt::ChecklistConfig& checklistRef();
 void* lockRef();  // FreeRTOS mutex of the config objects (SemaphoreHandle_t)
+
+// 走行記録 (core/odolog, round gauge 2.15.x) for the ui task. The log is written by the house task; these take
+// its lock. The page shows one period: odoNavOpen() = this year, odoNavMove() = ui::OdoMove (level for OM_LEVEL).
+struct OdoSnap {
+  lt::OdoLog::Status st;
+  bool dateOk;               // today known: level and p are valid
+  int level;                 // lt::OdoLog::Level
+  lt::OdoLog::Period p;
+  bool canFiner;
+};
+void odoNavOpen();
+void odoNavMove(uint8_t move, int level);
+void odoSnapshot(OdoSnap* out);
 
 }  // namespace app

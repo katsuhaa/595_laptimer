@@ -20,7 +20,7 @@
 
 namespace hw {
 
-inline constexpr const char* BLE_NAME = "595 laptimer";  // shown in RaceChrono's device list
+inline constexpr const char* BLE_NAME = "595 meter";  // shown in RaceChrono's device list (the round gauge's name, UI設計 v1.0 §9)
 constexpr int RC_IMU_HZ = 20;            // round gauge: IMU to RaceChrono per second (provisional there)
 constexpr int RC_QUEUE_LEN = 48;         // round gauge: notifications waiting (CAN + IMU here)
 constexpr int BLE_GPS_QUEUE_LEN = 8;     // GPS main + time notifications waiting
